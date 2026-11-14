@@ -98,7 +98,7 @@ test("an editor tool call is forwarded and answered through tool_result", async 
   const turn = bridge.handle({
     type: "send",
     id: "t2",
-    text: "use tool editor_get_context",
+    text: "[[tool:editor_get_context]]",
     model: { id: "stand-in-large" },
   });
   await flush();
@@ -128,7 +128,7 @@ test("Cursor's own tools are reported as builtin_tool, not tool_call", async () 
   const { bridge, out } = makeBridge();
   await init(bridge, { prewarm: false });
   out.length = 0;
-  await bridge.handle({ type: "send", id: "t3", text: "please builtin", model: { id: "stand-in-small" } });
+  await bridge.handle({ type: "send", id: "t3", text: "[[builtin]]", model: { id: "stand-in-small" } });
   assert.ok(out.some((message) => message.type === "builtin_tool" && message.name === "cursor:read"));
   assert.equal(out.some((message) => message.type === "tool_call"), false);
 });
@@ -137,7 +137,7 @@ test("cancel stops a waiting turn", async () => {
   const { bridge, out } = makeBridge();
   await init(bridge, { prewarm: false });
   out.length = 0;
-  const turn = bridge.handle({ type: "send", id: "t4", text: "please wait", model: { id: "stand-in-large" } });
+  const turn = bridge.handle({ type: "send", id: "t4", text: "[[wait]]", model: { id: "stand-in-large" } });
   await flush();
   await bridge.handle({ type: "cancel", id: "t4" });
   await turn;
@@ -167,7 +167,7 @@ test("read-only built-in mode keeps shell and delete off the agent", async () =>
   const { bridge, out } = makeBridge();
   await init(bridge, { builtinTools: "read-only", prewarm: false });
   out.length = 0;
-  await bridge.handle({ type: "send", id: "t5", text: "report", model: { id: "stand-in-large" } });
+  await bridge.handle({ type: "send", id: "t5", text: "[[report]]", model: { id: "stand-in-large" } });
   const report = JSON.parse(out.find((message) => message.type === "text_delta").text);
   assert.deepEqual(report.tools, ["read", "grep", "glob", "ls", "semSearch", "readLints", "readTodos", "updateTodos", "mcp"]);
   assert.ok(report.disallowedTools.includes("askQuestion"));
@@ -179,7 +179,7 @@ test("a run that cannot start reports error without a done", async () => {
   const { bridge, out } = makeBridge();
   await init(bridge, { prewarm: false });
   out.length = 0;
-  await bridge.handle({ type: "send", id: "t6", text: "please throw", model: { id: "stand-in-large" } });
+  await bridge.handle({ type: "send", id: "t6", text: "[[throw]]", model: { id: "stand-in-large" } });
   assert.equal(out.some((message) => message.type === "error"), true);
   assert.equal(out.some((message) => message.type === "done"), false);
   assert.equal(out.find((message) => message.type === "error").started, false);
