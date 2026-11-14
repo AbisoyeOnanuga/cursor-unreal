@@ -14,12 +14,14 @@ AI agent tooling for the Unreal Editor (UE 5.6+): an in-editor chat panel, a sha
 
 | Doc | Topic |
 |-----|--------|
+| [Getting started](Docs/GettingStarted.md) | Install, first turn, package check |
+| [Release checklist](Docs/ReleaseChecklist.md) | Pre-handoff package verification |
 | [Architecture](Docs/Architecture.md) | Modules and call paths |
 | [Providers](Docs/Providers.md) | Anthropic, Cursor bridge, MCP |
-| [Writing a tool](Docs/WritingATool.md) | Pack authoring |
-| [Writing a skill](Docs/WritingASkill.md) | `SKILL.md` format and layers |
+| [Writing a tool](Docs/WritingATool.md) | Pack authoring + worked example |
+| [Writing a skill](Docs/WritingASkill.md) | `SKILL.md` format, layers, worked example |
 | [Security](Docs/Security.md) | Secrets, risk tiers, boundaries |
-| [Performance](Docs/Performance.md) | Timing and MCP latency notes |
+| [Performance](Docs/Performance.md) | Performance tab, timing, MCP latency |
 | [Compatibility](Docs/Compatibility.md) | Engine matrix and shims |
 | [Troubleshooting](Docs/Troubleshooting.md) | Common failures |
 
@@ -39,5 +41,5 @@ Output lands under `Packaged/<EngineVersion>/CursorUnreal/`.
 
 ## Status
 
-- Primary target: **UE 5.6.1**
-- Live Anthropic / Cursor API calls and Cursor IDE MCP wiring are optional verification steps (not required to build or run automation fixtures).
+- Plan phases **0–5 complete** on **UE 5.6.1** (build, 33 automation tests, package with Skills + Bridge).
+- Optional later (not blocking): live Anthropic/Cursor API smoke, Cursor IDE `mcp.json` wiring, focused-editor MCP latency.

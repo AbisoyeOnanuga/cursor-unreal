@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CursorPackTestSupport.h"
+#include "Modules/ModuleManager.h"
 
 using namespace CursorPackTest;
 
@@ -61,10 +62,44 @@ bool FCursorPhase4aRegistrationTest::RunTest(const FString&)
 		{ TEXT("material_connect"), TEXT("materials"), ECursorToolRisk::Mutating },
 		{ TEXT("material_set_parameter"), TEXT("materials"), ECursorToolRisk::Mutating },
 		{ TEXT("material_compile"), TEXT("materials"), ECursorToolRisk::Mutating },
+		// Phase 4b packs (Niagara lives in CursorUnrealToolsNiagara; assert when that module is loaded).
+		{ TEXT("animbp_create"), TEXT("animation"), ECursorToolRisk::Mutating },
+		{ TEXT("animbp_get_info"), TEXT("animation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("animbp_list_graphs"), TEXT("animation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("animbp_list_nodes"), TEXT("animation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("animbp_compile"), TEXT("animation"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_create_cue"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_get_info"), TEXT("audio"), ECursorToolRisk::ReadOnly },
+		{ TEXT("sound_create_attenuation"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_configure_attenuation"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_set_attenuation"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_play"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_stop"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("sound_spawn_ambient"), TEXT("audio"), ECursorToolRisk::Mutating },
+		{ TEXT("optim_level_stats"), TEXT("optimisation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("optim_list_heavy_actors"), TEXT("optimisation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("optim_mesh_info"), TEXT("optimisation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("optim_suggest_lods"), TEXT("optimisation"), ECursorToolRisk::ReadOnly },
+		{ TEXT("niagara_create_system"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_get_info"), TEXT("niagara"), ECursorToolRisk::ReadOnly },
+		{ TEXT("niagara_compile"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_add_emitter"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_remove_emitter"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_set_emitter_enabled"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_list_parameters"), TEXT("niagara"), ECursorToolRisk::ReadOnly },
+		{ TEXT("niagara_add_user_parameter"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_set_parameter"), TEXT("niagara"), ECursorToolRisk::Mutating },
+		{ TEXT("niagara_spawn_in_level"), TEXT("niagara"), ECursorToolRisk::Mutating },
 	};
 
 	for (const FExpected& Entry : Expected)
 	{
+		const bool bNiagara = FString(Entry.Pack) == TEXT("niagara");
+		if (bNiagara && !FModuleManager::Get().IsModuleLoaded(TEXT("CursorUnrealToolsNiagara")))
+		{
+			AddWarning(TEXT("CursorUnrealToolsNiagara not loaded; skipping Niagara registration checks."));
+			continue;
+		}
 		const TSharedPtr<ICursorTool> Tool = FCursorToolRegistry::Get().Find(Entry.Name);
 		TestTrue(FString(Entry.Name) + TEXT(" is registered"), Tool.IsValid());
 		if (!Tool.IsValid())
@@ -82,11 +117,13 @@ bool FCursorPhase4aRegistrationTest::RunTest(const FString&)
 	// Switching a pack off hides all of it, and the packs can be switched off independently.
 	{
 		CursorTest::FScopedPolicy Policy;
-		UCursorUnrealSettings::GetMutable()->DisabledToolPacks = { FName(TEXT("blueprint")), FName(TEXT("materials")) };
+		UCursorUnrealSettings::GetMutable()->DisabledToolPacks = { FName(TEXT("blueprint")), FName(TEXT("materials")), FName(TEXT("audio")) };
 		TArray<TSharedRef<ICursorTool>> Offered = FCursorToolRegistry::Get().GetTools(FCursorToolRegistry::CallerMcp);
 		TestFalse(TEXT("disabled blueprint pack is hidden"), Offered.ContainsByPredicate([](const TSharedRef<ICursorTool>& T) { return T->GetPack() == FName(TEXT("blueprint")); }));
 		TestFalse(TEXT("disabled materials pack is hidden"), Offered.ContainsByPredicate([](const TSharedRef<ICursorTool>& T) { return T->GetPack() == FName(TEXT("materials")); }));
+		TestFalse(TEXT("disabled audio pack is hidden"), Offered.ContainsByPredicate([](const TSharedRef<ICursorTool>& T) { return T->GetPack() == FName(TEXT("audio")); }));
 		TestTrue(TEXT("the cpp pack is still offered"), Offered.ContainsByPredicate([](const TSharedRef<ICursorTool>& T) { return T->GetPack() == FName(TEXT("cpp")); }));
+		TestTrue(TEXT("the animation pack is still offered"), Offered.ContainsByPredicate([](const TSharedRef<ICursorTool>& T) { return T->GetPack() == FName(TEXT("animation")); }));
 	}
 	return true;
 }

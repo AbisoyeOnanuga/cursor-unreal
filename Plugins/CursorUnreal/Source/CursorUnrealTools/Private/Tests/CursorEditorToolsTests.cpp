@@ -44,7 +44,7 @@ namespace CursorToolsTests
 		FString Add(const TCHAR* Prefix) { return Labels.Add_GetRef(UniqueLabel(Prefix)); }
 	};
 
-	FString Args(const TCHAR* Format, const FString& A, const FString& B = FString())
+	FString EdtArgs(const TCHAR* Format, const FString& A, const FString& B = FString())
 	{
 		// Plain replacement: the JSON around the placeholders is full of braces of its own.
 		return FString(Format).Replace(TEXT("{0}"), *A).Replace(TEXT("{1}"), *B);
@@ -61,7 +61,7 @@ bool FCursorActorToolsTest::RunTest(const FString&)
 	const FString Label = Cleanup.Add(TEXT("CUTestLight"));
 
 	FCursorToolResult R = CursorTest::Call(TEXT("actor_spawn"),
-		*Args(TEXT("{\"class\":\"PointLight\",\"location\":[100,200,300],\"label\":\"{0}\",\"folder\":\"CursorUnrealTests\"}"), Label));
+		*EdtArgs(TEXT("{\"class\":\"PointLight\",\"location\":[100,200,300],\"label\":\"{0}\",\"folder\":\"CursorUnrealTests\"}"), Label));
 	TestFalse(TEXT("spawn succeeds: ") + R.Text, R.bIsError);
 	TestTrue(TEXT("spawned actor is in the level"), ActorExists(Label));
 
@@ -78,18 +78,18 @@ bool FCursorActorToolsTest::RunTest(const FString&)
 	TestTrue(TEXT("found by lower-case label"), CursorToolHelpers::FindActor(Label.ToLower(), Error) == Light);
 	TestTrue(TEXT("found by object name"), CursorToolHelpers::FindActor(Light->GetName(), Error) == Light);
 
-	R = CursorTest::Call(TEXT("actor_update"), *Args(TEXT("{\"name\":\"{0}\",\"location\":[1,2,3],\"rotation\":[0,90,0]}"), Label));
+	R = CursorTest::Call(TEXT("actor_update"), *EdtArgs(TEXT("{\"name\":\"{0}\",\"location\":[1,2,3],\"rotation\":[0,90,0]}"), Label));
 	TestFalse(TEXT("update succeeds: ") + R.Text, R.bIsError);
 	TestTrue(TEXT("update moved the actor"), Light->GetActorLocation().Equals(FVector(1, 2, 3), 0.1));
 	TestTrue(TEXT("update rotated the actor"), FMath::IsNearlyEqual(Light->GetActorRotation().Yaw, 90.0, 0.1));
 
-	R = CursorTest::Call(TEXT("actor_update"), *Args(TEXT("{\"name\":\"{0}\"}"), Label));
+	R = CursorTest::Call(TEXT("actor_update"), *EdtArgs(TEXT("{\"name\":\"{0}\"}"), Label));
 	TestTrue(TEXT("update with nothing to change is an error"), R.bIsError);
 
-	R = CursorTest::Call(TEXT("actor_get"), *Args(TEXT("{\"name\":\"{0}\"}"), Label));
+	R = CursorTest::Call(TEXT("actor_get"), *EdtArgs(TEXT("{\"name\":\"{0}\"}"), Label));
 	TestTrue(TEXT("actor_get lists components"), !R.bIsError && R.Structured.IsValid() && R.Structured->HasField(TEXT("components")));
 
-	R = CursorTest::Call(TEXT("actor_list"), *Args(TEXT("{\"class\":\"Light\",\"name_contains\":\"{0}\"}"), Label));
+	R = CursorTest::Call(TEXT("actor_list"), *EdtArgs(TEXT("{\"class\":\"Light\",\"name_contains\":\"{0}\"}"), Label));
 	TestTrue(TEXT("actor_list finds it through a base class"), !R.bIsError && R.Structured->GetIntegerField(TEXT("total")) == 1);
 
 	R = CursorTest::Call(TEXT("actor_list"), TEXT("{\"class\":\"NoSuchClassAnywhere\"}"));
@@ -97,9 +97,9 @@ bool FCursorActorToolsTest::RunTest(const FString&)
 
 	// Properties on a component, through the same notifications the Details panel sends.
 	const FString ComponentPath = Label + TEXT(".LightComponent0");
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"Intensity\":1234,\"LightColor\":{\"R\":255,\"G\":0,\"B\":0,\"A\":255}}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"Intensity\":1234,\"LightColor\":{\"R\":255,\"G\":0,\"B\":0,\"A\":255}}}"), ComponentPath));
 	TestFalse(TEXT("set properties succeeds: ") + R.Text, R.bIsError);
-	R = CursorTest::Call(TEXT("object_get_properties"), *Args(TEXT("{\"object\":\"{0}\",\"names\":[\"Intensity\",\"LightColor\",\"Nope\"]}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_get_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"names\":[\"Intensity\",\"LightColor\",\"Nope\"]}"), ComponentPath));
 	TestFalse(TEXT("get properties succeeds: ") + R.Text, R.bIsError);
 	if (!R.bIsError)
 	{
@@ -109,46 +109,46 @@ bool FCursorActorToolsTest::RunTest(const FString&)
 		TestTrue(TEXT("unknown names are reported"), R.Structured->HasField(TEXT("not_found")));
 	}
 
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"NoSuchProperty\":1}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"NoSuchProperty\":1}}"), ComponentPath));
 	TestTrue(TEXT("unknown property is an error"), R.bIsError);
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"Intensity\":{\"not\":\"a number\"}}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"Intensity\":{\"not\":\"a number\"}}}"), ComponentPath));
 	TestTrue(TEXT("wrong value type is an error"), R.bIsError);
-	R = CursorTest::Call(TEXT("object_get_properties"), *Args(TEXT("{\"object\":\"{0}.NoSuchComponent\"}"), Label));
+	R = CursorTest::Call(TEXT("object_get_properties"), *EdtArgs(TEXT("{\"object\":\"{0}.NoSuchComponent\"}"), Label));
 	TestTrue(TEXT("unknown component is an error"), R.bIsError);
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"LightColor\":{\"Red\":1}}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"LightColor\":{\"Red\":1}}}"), ComponentPath));
 	TestTrue(TEXT("unknown struct member is an error, not silently ignored: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("Red")));
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"Mobility\":\"Sideways\"}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"Mobility\":\"Sideways\"}}"), ComponentPath));
 	TestTrue(TEXT("unknown enum value is an error that lists the choices: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("Movable")));
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"Mobility\":\"Movable\"}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"Mobility\":\"Movable\"}}"), ComponentPath));
 	TestFalse(TEXT("enum by name succeeds: ") + R.Text, R.bIsError);
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"IESTexture\":\"/Game/No/Such/Texture\"}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"IESTexture\":\"/Game/No/Such/Texture\"}}"), ComponentPath));
 	TestTrue(TEXT("a reference to a missing asset is an error, not a silent null: ") + R.Text, R.bIsError);
 	TestTrue(TEXT("a failed edit leaves earlier values alone"), FMath::IsNearlyEqual(
-		CursorTest::Call(TEXT("object_get_properties"), *Args(TEXT("{\"object\":\"{0}\",\"names\":[\"Intensity\"]}"), ComponentPath))
+		CursorTest::Call(TEXT("object_get_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"names\":[\"Intensity\"]}"), ComponentPath))
 			.Structured->GetObjectField(TEXT("properties"))->GetNumberField(TEXT("Intensity")), 1234.0));
 
 	// Nested struct member by dotted path.
-	R = CursorTest::Call(TEXT("object_set_properties"), *Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"RelativeLocation.Z\":777}}"), ComponentPath));
+	R = CursorTest::Call(TEXT("object_set_properties"), *EdtArgs(TEXT("{\"object\":\"{0}\",\"properties\":{\"RelativeLocation.Z\":777}}"), ComponentPath));
 	TestFalse(TEXT("dotted path set succeeds: ") + R.Text, R.bIsError);
 	TestTrue(TEXT("dotted path changed only Z"), Light->GetActorLocation().Equals(FVector(1, 2, 777), 0.1));
 
-	R = CursorTest::Call(TEXT("actor_duplicate"), *Args(TEXT("{\"name\":\"{0}\",\"offset\":[0,0,50]}"), Label));
+	R = CursorTest::Call(TEXT("actor_duplicate"), *EdtArgs(TEXT("{\"name\":\"{0}\",\"offset\":[0,0,50]}"), Label));
 	TestFalse(TEXT("duplicate succeeds: ") + R.Text, R.bIsError);
 	if (!R.bIsError)
 	{
 		Cleanup.Labels.Add(R.Structured->GetStringField(TEXT("name")));
 	}
 
-	R = CursorTest::Call(TEXT("selection_set"), *Args(TEXT("{\"names\":[\"{0}\"]}"), Label));
+	R = CursorTest::Call(TEXT("selection_set"), *EdtArgs(TEXT("{\"names\":[\"{0}\"]}"), Label));
 	TestFalse(TEXT("selection_set succeeds: ") + R.Text, R.bIsError);
 	R = CursorTest::Call(TEXT("editor_get_context"));
 	TestTrue(TEXT("context reports the selection"), !R.bIsError && R.Text.Contains(Light->GetName()));
 
-	R = CursorTest::Call(TEXT("actor_delete"), *Args(TEXT("{\"names\":[\"{0}\",\"definitely-not-an-actor\"]}"), Label));
+	R = CursorTest::Call(TEXT("actor_delete"), *EdtArgs(TEXT("{\"names\":[\"{0}\",\"definitely-not-an-actor\"]}"), Label));
 	TestTrue(TEXT("delete with a bad name is an error"), R.bIsError);
 	TestTrue(TEXT("and deletes nothing"), ActorExists(Label));
 
-	R = CursorTest::Call(TEXT("actor_delete"), *Args(TEXT("{\"names\":[\"{0}\"]}"), Label));
+	R = CursorTest::Call(TEXT("actor_delete"), *EdtArgs(TEXT("{\"names\":[\"{0}\"]}"), Label));
 	TestFalse(TEXT("delete succeeds: ") + R.Text, R.bIsError);
 	TestFalse(TEXT("deleted actor is gone"), ActorExists(Label));
 	return true;
@@ -163,19 +163,19 @@ bool FCursorToolsSafetyTest::RunTest(const FString&)
 	{
 		// Default policy, and nobody to ask: dangerous tools must be refused, for every caller.
 		CursorTest::FScopedPolicy Policy;
-		FCursorToolResult R = CursorTest::Call(TEXT("actor_spawn"), *Args(TEXT("{\"class\":\"PointLight\",\"label\":\"{0}\"}"), Label));
+		FCursorToolResult R = CursorTest::Call(TEXT("actor_spawn"), *EdtArgs(TEXT("{\"class\":\"PointLight\",\"label\":\"{0}\"}"), Label));
 		TestFalse(TEXT("undoable tools run under the default policy: ") + R.Text, R.bIsError);
 
 		for (const FString& Caller : { FCursorToolRegistry::CallerNative, FCursorToolRegistry::CallerCursorSdk, FCursorToolRegistry::CallerMcp })
 		{
-			R = CursorTest::Call(TEXT("actor_delete"), *Args(TEXT("{\"names\":[\"{0}\"]}"), Label), Caller);
+			R = CursorTest::Call(TEXT("actor_delete"), *EdtArgs(TEXT("{\"names\":[\"{0}\"]}"), Label), Caller);
 			TestTrue(TEXT("delete is refused without approval for ") + Caller, R.bIsError);
 			R = CursorTest::Call(TEXT("python_exec"), TEXT("{\"code\":\"import unreal\"}"), Caller);
 			TestTrue(TEXT("python is refused without approval for ") + Caller, R.bIsError);
 			R = CursorTest::Call(TEXT("console_command"), TEXT("{\"command\":\"stat fps\"}"), Caller);
 			TestTrue(TEXT("console is refused without approval for ") + Caller, R.bIsError);
 			// Hiding a dangerous call inside a batch must not get it past the gate.
-			R = CursorTest::Call(TEXT("batch"), *Args(TEXT("{\"calls\":[{\"tool\":\"actor_delete\",\"args\":{\"names\":[\"{0}\"]}}]}"), Label), Caller);
+			R = CursorTest::Call(TEXT("batch"), *EdtArgs(TEXT("{\"calls\":[{\"tool\":\"actor_delete\",\"args\":{\"names\":[\"{0}\"]}}]}"), Label), Caller);
 			TestTrue(TEXT("batched delete is refused without approval for ") + Caller, R.bIsError);
 		}
 		TestTrue(TEXT("the actor survived every refused delete"), ActorExists(Label));
@@ -184,9 +184,9 @@ bool FCursorToolsSafetyTest::RunTest(const FString&)
 	{
 		// Read-only policy: nothing changes, reading still works.
 		CursorTest::FScopedPolicy Policy(NAME_None, ECursorApprovalPolicy::ReadOnly);
-		FCursorToolResult R = CursorTest::Call(TEXT("actor_update"), *Args(TEXT("{\"name\":\"{0}\",\"location\":[9,9,9]}"), Label));
+		FCursorToolResult R = CursorTest::Call(TEXT("actor_update"), *EdtArgs(TEXT("{\"name\":\"{0}\",\"location\":[9,9,9]}"), Label));
 		TestTrue(TEXT("read-only policy refuses edits"), R.bIsError);
-		R = CursorTest::Call(TEXT("actor_get"), *Args(TEXT("{\"name\":\"{0}\"}"), Label));
+		R = CursorTest::Call(TEXT("actor_get"), *EdtArgs(TEXT("{\"name\":\"{0}\"}"), Label));
 		TestFalse(TEXT("read-only policy allows reads"), R.bIsError);
 	}
 
@@ -218,7 +218,7 @@ bool FCursorBatchRollbackTest::RunTest(const FString&)
 	}
 
 	// Third call fails: the two spawns before it must be undone.
-	FCursorToolResult R = CursorTest::Call(TEXT("batch"), *Args(
+	FCursorToolResult R = CursorTest::Call(TEXT("batch"), *EdtArgs(
 		TEXT("{\"calls\":[")
 		TEXT("{\"tool\":\"actor_spawn\",\"args\":{\"class\":\"PointLight\",\"label\":\"{0}\"}},")
 		TEXT("{\"tool\":\"actor_spawn\",\"args\":{\"class\":\"PointLight\",\"label\":\"{1}\"}},")
@@ -229,7 +229,7 @@ bool FCursorBatchRollbackTest::RunTest(const FString&)
 	TestFalse(TEXT("second spawn was undone"), ActorExists(B));
 
 	// Same batch with rollback off keeps what succeeded.
-	R = CursorTest::Call(TEXT("batch"), *Args(
+	R = CursorTest::Call(TEXT("batch"), *EdtArgs(
 		TEXT("{\"rollback_on_error\":false,\"calls\":[")
 		TEXT("{\"tool\":\"actor_spawn\",\"args\":{\"class\":\"PointLight\",\"label\":\"{0}\"}},")
 		TEXT("{\"tool\":\"actor_update\",\"args\":{\"name\":\"no-such-actor-anywhere\",\"location\":[0,0,0]}}]}"), A));
@@ -237,7 +237,7 @@ bool FCursorBatchRollbackTest::RunTest(const FString&)
 	TestTrue(TEXT("without rollback the spawn stays"), ActorExists(A));
 
 	// A clean batch is one undo step.
-	R = CursorTest::Call(TEXT("batch"), *Args(
+	R = CursorTest::Call(TEXT("batch"), *EdtArgs(
 		TEXT("{\"calls\":[")
 		TEXT("{\"tool\":\"actor_spawn\",\"args\":{\"class\":\"PointLight\",\"label\":\"{0}\"}},")
 		TEXT("{\"tool\":\"actor_update\",\"args\":{\"name\":\"{0}\",\"location\":[5,5,5]}}]}"), B));
@@ -271,7 +271,7 @@ bool FCursorAssetToolsTest::RunTest(const FString&)
 
 	// Placing an asset uses the editor's own actor factories.
 	const FString Label = Cleanup.Add(TEXT("CUTestCube"));
-	R = CursorTest::Call(TEXT("actor_spawn"), *Args(TEXT("{\"class\":\"/Engine/BasicShapes/Cube\",\"label\":\"{0}\"}"), Label));
+	R = CursorTest::Call(TEXT("actor_spawn"), *EdtArgs(TEXT("{\"class\":\"/Engine/BasicShapes/Cube\",\"label\":\"{0}\"}"), Label));
 	TestFalse(TEXT("spawn from a mesh asset succeeds: ") + R.Text, R.bIsError);
 	TestTrue(TEXT("it made a StaticMeshActor"), R.Text.Contains(TEXT("StaticMeshActor")));
 
@@ -287,7 +287,7 @@ bool FCursorEscapeHatchTest::RunTest(const FString&)
 
 	const FString Marker = TEXT("tail-marker-") + FGuid::NewGuid().ToString();
 	UE_LOG(LogCursorUnreal, Display, TEXT("%s"), *Marker);
-	FCursorToolResult R = CursorTest::Call(TEXT("editor_log_tail"), *Args(TEXT("{\"contains\":\"{0}\",\"lines\":5}"), Marker));
+	FCursorToolResult R = CursorTest::Call(TEXT("editor_log_tail"), *EdtArgs(TEXT("{\"contains\":\"{0}\",\"lines\":5}"), Marker));
 	TestTrue(TEXT("log tail finds a fresh line"), !R.bIsError && R.Text.Contains(Marker));
 
 	R = CursorTest::Call(TEXT("console_command"), TEXT("{\"command\":\"t.MaxFPS\"}"));

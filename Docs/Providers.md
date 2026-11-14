@@ -19,4 +19,4 @@
 
 - Local loopback server from `CursorUnrealMCP`.
 - Bearer token + Origin checks; plain JSON tool results.
-- Wire the server into `~/.cursor/mcp.json` when you want IDE verification (user-gated; see `Docs/measurements/phase1-mcp-latency.md`).
+- Optional: wire the server into `~/.cursor/mcp.json` for IDE verification (see `Docs/measurements/phase1-mcp-latency.md`). Not required for plugin build, package, or automation tests.

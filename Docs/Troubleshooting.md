@@ -6,6 +6,10 @@
 - Build with `./Scripts/Build-Plugin.ps1` and check the Output Log for module load errors.
 - If Niagara is disabled in the project, expect `CursorUnrealToolsNiagara` to fail loading unless you remove that module from the `.uplugin`.
 
+## Packaged plugin missing Skills or Bridge
+
+`Config/FilterPlugin.ini` must list `/Skills/...` and the Bridge source files (not `node_modules`). After `Build-Plugin.ps1 -Mode Package`, confirm those folders exist under `Packaged/<version>/CursorUnreal/`, then run `npm install` inside `Bridge/`.
+
 ## Tools missing
 
 - Project Settings → Cursor Unreal → disabled tool packs.
