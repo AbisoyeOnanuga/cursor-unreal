@@ -571,24 +571,42 @@ FReply SCursorSetupView::HandleSaveKey(FKeyRow* Row)
 	}
 	Row->Box->SetText(FText::GetEmpty());
 	RefreshKeyStatus(*Row);
-	SetNote(TEXT("Key saved."), false);
 
-	// Asking for the model list is free and shows at once whether the key works.
-	const TSharedPtr<FAgentSession> Session = FCursorEditorState::Get().GetSession();
-	if (Row == &AnthropicKey && Session.IsValid() && !CursorAgent::IsDemoMode() && UCursorUnrealSettings::Get()->Provider == ECursorProvider::Anthropic)
+	if (CursorAgent::IsDemoMode())
 	{
-		SetNote(TEXT("Key saved. Checking it by asking for the model list..."), false);
-		const TWeakPtr<SCursorSetupView> Weak = SharedThis(this);
-		Session->GetBackend().RefreshModels([Weak](bool bOk, const TArray<FAgentModelInfo>& Models, const FString& Error)
-		{
-			if (const TSharedPtr<SCursorSetupView> Self = Weak.Pin())
-			{
-				Self->SetNote(bOk
-					? FString::Printf(TEXT("Key saved and accepted. %d models available: pick one in the Chat tab."), Models.Num())
-					: TEXT("Key saved, but the check failed. ") + Error, !bOk);
-			}
-		});
+		SetNote(TEXT("Key saved. This editor is running the offline demo, which does not use it: start the editor without -CursorUnrealDemo."), false);
+		return FReply::Handled();
 	}
+
+	// A key for the provider that is not selected does nothing until the provider is changed. Say so, rather than look as if the key failed.
+	const bool bIsCursorKey = Row == &CursorKey;
+	const bool bCursorSelected = UCursorUnrealSettings::Get()->Provider == ECursorProvider::Cursor;
+	if (bIsCursorKey != bCursorSelected)
+	{
+		SetNote(FString::Printf(TEXT("Key saved, but not in use: Provider is set to %s. To use this key, change Provider to %s under Settings below."),
+			bCursorSelected ? TEXT("Cursor") : TEXT("Anthropic"), bIsCursorKey ? TEXT("Cursor") : TEXT("Anthropic")), false);
+		return FReply::Handled();
+	}
+
+	const TSharedPtr<FAgentSession> Session = FCursorEditorState::Get().GetSession();
+	if (!Session.IsValid())
+	{
+		SetNote(TEXT("Key saved."), false);
+		return FReply::Handled();
+	}
+
+	// Asking for the model list shows at once whether the key works, and fills the Model menu in the Chat tab.
+	SetNote(TEXT("Key saved. Checking it by asking for the model list..."), false);
+	const TWeakPtr<SCursorSetupView> Weak = SharedThis(this);
+	Session->GetBackend().RefreshModels([Weak](bool bOk, const TArray<FAgentModelInfo>& Models, const FString& Error)
+	{
+		if (const TSharedPtr<SCursorSetupView> Self = Weak.Pin())
+		{
+			Self->SetNote(bOk
+				? FString::Printf(TEXT("Key saved and accepted. %d models available: pick one from the Model menu in the Chat tab."), Models.Num())
+				: TEXT("Key saved, but the check failed. ") + Error, !bOk);
+		}
+	});
 	return FReply::Handled();
 }
 

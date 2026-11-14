@@ -88,6 +88,8 @@ private:
 	TSharedRef<SWidget> BuildModelMenu();
 	void ChooseModel(FString ModelId);
 	void RefreshModels();
+	/** Fetches the model list without being asked, when there is none yet. Quiet when it cannot (no key so far). */
+	void FetchModelsIfMissing();
 	void UpdateModelLabel();
 
 	TArray<FAgentContextBlock> GatherContext() const;
@@ -109,6 +111,7 @@ private:
 
 	FText ModelLabel;
 	float SecondsSinceLabelUpdate = 0.0f;
+	bool bFetchingModels = false;
 
 	/** Something to tell the user in the status line: why a message could not be sent, how a refresh went. */
 	FString Note;

@@ -13,6 +13,8 @@ struct FCursorBridgeBackendOptions
 	FString SdkModuleOverride;
 	/** Skip the install probe when the override above is set. */
 	bool bSkipInstallProbe = false;
+	/** Keep the fetched model list under Saved/ between editor runs. Tests turn it off so they do not replace the real one. */
+	bool bPersistModels = true;
 };
 
 /**
@@ -70,6 +72,12 @@ private:
 	FString NextTurnId();
 	FString NextModelsId();
 
+	/** True when the bridge was set up with a different key from the one stored now. */
+	bool KeyChangedSinceInit() const;
+	bool SendListModels();
+	/** Answers everyone waiting for the model list. */
+	void FinishModels(bool bOk, const FString& Error);
+
 	FCursorBridgeBackendOptions Options;
 	TUniquePtr<FCursorBridgeProcess> Process;
 	FString SessionId;
@@ -80,6 +88,8 @@ private:
 	bool bReady = false;
 	bool bInitInFlight = false;
 	FString InitFingerprint;
+	/** Digest of the key the bridge was last set up with. Never the key itself. */
+	FString InitKeyDigest;
 
 	EPhase Phase = EPhase::Idle;
 	TSharedPtr<FAgentEventSink> Sink;
@@ -91,8 +101,10 @@ private:
 	bool bCancelRequested = false;
 	FAgentUsage TurnUsage;
 
+	/** The list request the bridge is working on. Answers carrying another id are from before a key change and are dropped. */
 	FString ModelsRequestId;
-	FAgentModelsCallback ModelsCallback;
+	/** Everyone waiting for the model list. One request to the bridge answers them all. */
+	TArray<FAgentModelsCallback> ModelsCallbacks;
 
 	/** Tool calls the bridge asked for that have not been answered yet. */
 	TSet<FString> PendingToolCalls;

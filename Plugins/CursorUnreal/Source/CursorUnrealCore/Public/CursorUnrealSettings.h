@@ -91,9 +91,9 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Model")
 	FString AnthropicModel;
 
-	/** Model id sent to Cursor. Pick from the list in the chat panel. "auto" lets Cursor choose. */
+	/** Model id sent to Cursor. Pick from the list in the chat panel. "default" lets Cursor choose (the list shows it as Auto); "auto" is read the same way. */
 	UPROPERTY(config, EditAnywhere, Category = "Model")
-	FString CursorModel = TEXT("auto");
+	FString CursorModel = TEXT("default");
 
 	/** Anthropic API endpoint. Must be https unless it points at this machine. */
 	UPROPERTY(config, EditAnywhere, Category = "Model", AdvancedDisplay)

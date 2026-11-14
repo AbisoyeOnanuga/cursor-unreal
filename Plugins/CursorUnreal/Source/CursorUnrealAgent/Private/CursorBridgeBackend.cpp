@@ -13,6 +13,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCursorBridge, Log, All);
 
@@ -74,6 +75,12 @@ namespace
 		FFileHelper::SaveStringToFile(CursorJson::ToString(Root, true), *ModelCacheFile(),
 			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 	}
+
+	/** Enough to tell two keys apart in memory without keeping either. */
+	FString KeyDigest(const FString& Key)
+	{
+		return Key.IsEmpty() ? FString() : FMD5::HashAnsiString(*Key);
+	}
 }
 
 FCursorBridgeBackend::FCursorBridgeBackend(FCursorBridgeBackendOptions InOptions)
@@ -84,7 +91,10 @@ FCursorBridgeBackend::FCursorBridgeBackend(FCursorBridgeBackendOptions InOptions
 	{
 		Options.KeyProvider = []() { return CursorSecrets::ResolveCursorKey(); };
 	}
-	LoadModelCache(Models);
+	if (Options.bPersistModels)
+	{
+		LoadModelCache(Models);
+	}
 	StatusLine = CursorBridge::ProbeInstall().StatusLine();
 }
 
@@ -101,7 +111,9 @@ FCursorBridgeBackend::~FCursorBridgeBackend()
 
 FString FCursorBridgeBackend::GetModelId() const
 {
-	return UCursorUnrealSettings::Get()->CursorModel.TrimStartAndEnd();
+	const FString Id = UCursorUnrealSettings::Get()->CursorModel.TrimStartAndEnd();
+	// Cursor's model list calls its automatic choice "default" and shows it as "Auto". Take either word.
+	return Id.Equals(TEXT("auto"), ESearchCase::IgnoreCase) ? FString(TEXT("default")) : Id;
 }
 
 void FCursorBridgeBackend::SetModelId(const FString& ModelId)
@@ -120,7 +132,7 @@ bool FCursorBridgeBackend::CheckReady(FText& OutWhyNot) const
 	}
 	if (GetModelId().IsEmpty())
 	{
-		OutWhyNot = FText::FromString(TEXT("No model chosen. Pick one from the model list, or set Cursor Model to \"auto\"."));
+		OutWhyNot = FText::FromString(TEXT("No model chosen. Pick one from the model list, or set Cursor Model to \"default\" to let Cursor choose."));
 		return false;
 	}
 	if (!Options.bSkipInstallProbe)
@@ -204,6 +216,7 @@ bool FCursorBridgeBackend::EnsureProcess(FString& OutError)
 	bReady = false;
 	bInitInFlight = false;
 	InitFingerprint.Reset();
+	InitKeyDigest.Reset();
 	if (!Next->Start(Install.NodePath, Install.BridgeScript, ExtraArgs, OutError))
 	{
 		return false;
@@ -244,6 +257,7 @@ bool FCursorBridgeBackend::SendInit(FString& OutError)
 		*FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()),
 		LexToString(UCursorUnrealSettings::Get()->CursorBuiltinTools),
 		*CursorJson::ToString(Tools));
+	InitKeyDigest = KeyDigest(Key);
 
 	bReady = false;
 	bInitInFlight = true;
@@ -337,6 +351,12 @@ void FCursorBridgeBackend::SendTurn(const FAgentTurnRequest& Request, FAgentEven
 	BeginTurn(MoveTemp(InSink));
 	Phase = EPhase::Starting;
 
+	if (KeyChangedSinceInit())
+	{
+		// The bridge still holds the old key. Setting it up again starts a fresh Cursor agent.
+		bReady = false;
+		bInitInFlight = false;
+	}
 	if (!bReady)
 	{
 		if (!bInitInFlight && !SendInit(Error))
@@ -451,28 +471,57 @@ void FCursorBridgeBackend::RefreshModels(FAgentModelsCallback Callback)
 		return;
 	}
 
-	ModelsCallback = MoveTemp(Callback);
-	ModelsRequestId = NextModelsId();
+	const bool bAlreadyAsked = ModelsCallbacks.Num() > 0 && !ModelsRequestId.IsEmpty();
+	ModelsCallbacks.Add(MoveTemp(Callback));
+
+	// A key saved since the bridge was set up: set it up again, or the list is fetched with the old one.
+	// Not during a turn, which setting up again would end.
+	if (Phase == EPhase::Idle && KeyChangedSinceInit())
+	{
+		bReady = false;
+		bInitInFlight = false;
+		ModelsRequestId.Reset();
+	}
 
 	if (!bReady)
 	{
+		// "ready" sends the request.
 		if (!bInitInFlight && !SendInit(Error))
 		{
-			ModelsCallback(false, Models, Error);
-			ModelsCallback = nullptr;
-			ModelsRequestId.Reset();
+			FinishModels(false, Error);
 		}
 		return;
 	}
+	if (!bAlreadyAsked && !SendListModels())
+	{
+		FinishModels(false, TEXT("Could not write to the Cursor bridge."));
+	}
+}
 
+bool FCursorBridgeBackend::KeyChangedSinceInit() const
+{
+	return !InitKeyDigest.IsEmpty() && InitKeyDigest != KeyDigest(Options.KeyProvider());
+}
+
+bool FCursorBridgeBackend::SendListModels()
+{
+	ModelsRequestId = NextModelsId();
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetStringField(TEXT("type"), TEXT("list_models"));
 	Message->SetStringField(TEXT("id"), ModelsRequestId);
-	if (!Process->WriteLine(CursorJson::ToString(Message)))
+	return Process && Process->WriteLine(CursorJson::ToString(Message));
+}
+
+void FCursorBridgeBackend::FinishModels(bool bOk, const FString& Error)
+{
+	ModelsRequestId.Reset();
+	// Emptied first: a callback may ask for the list again.
+	const TArray<FAgentModelsCallback> Callbacks = MoveTemp(ModelsCallbacks);
+	ModelsCallbacks.Reset();
+	const TArray<FAgentModelInfo> Current = Models;
+	for (const FAgentModelsCallback& Callback : Callbacks)
 	{
-		ModelsCallback(false, Models, TEXT("Could not write to the Cursor bridge."));
-		ModelsCallback = nullptr;
-		ModelsRequestId.Reset();
+		Callback(bOk, Current, Error);
 	}
 }
 
@@ -495,7 +544,7 @@ void FCursorBridgeBackend::HandleMessage(const TSharedPtr<FJsonObject>& Message)
 		bHelloSeen = true;
 		StatusLine = FString::Printf(TEXT("Bridge up (Node %s). Waiting to initialise."),
 			*AgentJson::Str(Message, TEXT("node")));
-		if ((Phase == EPhase::Starting || ModelsCallback) && !bInitInFlight)
+		if ((Phase == EPhase::Starting || ModelsCallbacks.Num() > 0) && !bInitInFlight)
 		{
 			FString Error;
 			if (!SendInit(Error) && Phase == EPhase::Starting)
@@ -513,13 +562,9 @@ void FCursorBridgeBackend::HandleMessage(const TSharedPtr<FJsonObject>& Message)
 			*AgentJson::Str(Message, TEXT("sdk")),
 			static_cast<int32>(AgentJson::Num(Message, TEXT("tools"))));
 
-		if (ModelsCallback)
+		if (ModelsCallbacks.Num() > 0 && !SendListModels())
 		{
-			TSharedRef<FJsonObject> List = MakeShared<FJsonObject>();
-			List->SetStringField(TEXT("type"), TEXT("list_models"));
-			List->SetStringField(TEXT("id"), ModelsRequestId.IsEmpty() ? NextModelsId() : ModelsRequestId);
-			ModelsRequestId = AgentJson::Str(List, TEXT("id"));
-			Process->WriteLine(CursorJson::ToString(List));
+			FinishModels(false, TEXT("Could not write to the Cursor bridge."));
 		}
 
 		if (Phase == EPhase::Starting && Sink.IsValid())
@@ -550,12 +595,7 @@ void FCursorBridgeBackend::HandleMessage(const TSharedPtr<FJsonObject>& Message)
 		bReady = false;
 		const FString Text = CursorRedactor::Redact(AgentJson::Str(Message, TEXT("message")));
 		StatusLine = Text;
-		if (ModelsCallback)
-		{
-			ModelsCallback(false, Models, Text);
-			ModelsCallback = nullptr;
-			ModelsRequestId.Reset();
-		}
+		FinishModels(false, Text);
 		if (Phase != EPhase::Idle)
 		{
 			Fail(Text);
@@ -576,16 +616,14 @@ void FCursorBridgeBackend::HandleMessage(const TSharedPtr<FJsonObject>& Message)
 	}
 	if (Type == TEXT("models") || Type == TEXT("models_error"))
 	{
-		if (!ModelsCallback)
+		// An answer to a request made before the key changed is not the answer anyone is waiting for.
+		if (ModelsCallbacks.Num() == 0 || AgentJson::Str(Message, TEXT("id")) != ModelsRequestId)
 		{
 			return;
 		}
-		const FAgentModelsCallback Callback = MoveTemp(ModelsCallback);
-		ModelsCallback = nullptr;
-		ModelsRequestId.Reset();
 		if (Type == TEXT("models_error"))
 		{
-			Callback(false, Models, CursorRedactor::Redact(AgentJson::Str(Message, TEXT("message"))));
+			FinishModels(false, CursorRedactor::Redact(AgentJson::Str(Message, TEXT("message"))));
 			return;
 		}
 		TArray<FAgentModelInfo> Next;
@@ -612,8 +650,11 @@ void FCursorBridgeBackend::HandleMessage(const TSharedPtr<FJsonObject>& Message)
 			}
 		}
 		Models = MoveTemp(Next);
-		SaveModelCache(Models);
-		Callback(true, Models, FString());
+		if (Options.bPersistModels)
+		{
+			SaveModelCache(Models);
+		}
+		FinishModels(true, FString());
 		return;
 	}
 
@@ -771,11 +812,7 @@ void FCursorBridgeBackend::HandleProcessExit(int32 ExitCode)
 	bInitInFlight = false;
 	bHelloSeen = false;
 	StatusLine = FString::Printf(TEXT("Bridge exited (code %d)."), ExitCode);
-	if (ModelsCallback)
-	{
-		ModelsCallback(false, Models, StatusLine);
-		ModelsCallback = nullptr;
-	}
+	FinishModels(false, StatusLine);
 	if (Phase != EPhase::Idle)
 	{
 		Fail(FString::Printf(TEXT("The Cursor bridge stopped unexpectedly (exit code %d)."), ExitCode));

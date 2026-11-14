@@ -1,0 +1,7 @@
+{
+	"note": "Written by the CursorUnreal plugin. Records which skill files it installed so it can update them without touching ones you edited.",
+	"files":
+	{
+		"unreal-project-conventions/SKILL.md": "E7B4901E117940BC55145DB2ED1D0D3F3330BF93"
+	}
+}

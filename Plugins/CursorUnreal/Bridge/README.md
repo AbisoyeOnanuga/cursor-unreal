@@ -12,7 +12,7 @@ npm install
 ```
 
 3. In the Unreal Setup tab, save a **Cursor API key** and set **Provider** to **Cursor**.
-4. Pick a model from the chat model list (fetched from your Cursor account), or leave **Cursor Model** as `auto`.
+4. Pick a model from the chat model list (fetched from your Cursor account), or leave **Cursor Model** as `default` (shown as Auto), which lets Cursor choose. The list is fetched when the key is saved; **Refresh the list** in the Model menu fetches it again.
 
 The editor starts `bridge.mjs` itself. You do not run this folder by hand for normal use.
 

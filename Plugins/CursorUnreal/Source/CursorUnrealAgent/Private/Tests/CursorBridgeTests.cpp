@@ -171,4 +171,114 @@ bool FCursorBridgeTurnTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace CursorBridgeTests
+{
+	struct FModelsState
+	{
+		TSharedPtr<FCursorBridgeBackend> Backend;
+		/** What the key store holds. The stand-in SDK refuses "bad-key". */
+		FString Key = TEXT("bad-key");
+		int32 Answers = 0;
+		bool bLastOk = false;
+		FString LastError;
+		TArray<FAgentModelInfo> LastModels;
+		double Deadline = 0.0;
+
+		void Ask()
+		{
+			Deadline = FPlatformTime::Seconds() + 15.0;
+			Backend->RefreshModels([this](bool bOk, const TArray<FAgentModelInfo>& Models, const FString& Error)
+			{
+				++Answers;
+				bLastOk = bOk;
+				LastModels = Models;
+				LastError = Error;
+			});
+		}
+
+		bool Waited(int32 Expected) const
+		{
+			return Answers >= Expected || FPlatformTime::Seconds() > Deadline;
+		}
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCursorBridgeModelsTest,
+	"CursorUnreal.Agent.BridgeModels",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCursorBridgeModelsTest::RunTest(const FString& Parameters)
+{
+	using namespace CursorBridgeTests;
+	if (!FPaths::FileExists(FakeSdkPath()) || CursorBridge::FindNodeExecutable().IsEmpty())
+	{
+		AddInfo(TEXT("Skipping: Node or the stand-in SDK is missing."));
+		return true;
+	}
+
+	// "auto" is what older settings files hold; the list Cursor returns calls the same thing "default".
+	{
+		UCursorUnrealSettings* S = UCursorUnrealSettings::GetMutable();
+		const FString Saved = S->CursorModel;
+		const TSharedRef<FCursorBridgeBackend> Probe = MakeShared<FCursorBridgeBackend>();
+		S->CursorModel = TEXT("auto");
+		TestEqual(TEXT("'auto' is sent as 'default'"), Probe->GetModelId(), FString(TEXT("default")));
+		S->CursorModel = TEXT("composer-2");
+		TestEqual(TEXT("other ids are sent as they are"), Probe->GetModelId(), FString(TEXT("composer-2")));
+		S->CursorModel = Saved;
+	}
+
+	const TSharedRef<FModelsState> State = MakeShared<FModelsState>();
+	const TWeakPtr<FModelsState> WeakState = State;
+
+	FCursorBridgeBackendOptions Options;
+	Options.KeyProvider = [WeakState]()
+	{
+		const TSharedPtr<FModelsState> Pinned = WeakState.Pin();
+		return Pinned.IsValid() ? Pinned->Key : FString();
+	};
+	Options.SdkModuleOverride = FakeSdkPath();
+	Options.bSkipInstallProbe = true;
+	// The real list under Saved/ belongs to the user's account. Leave it alone.
+	Options.bPersistModels = false;
+	State->Backend = MakeShared<FCursorBridgeBackend>(MoveTemp(Options));
+	TestEqual(TEXT("no list before asking"), State->Backend->GetCachedModels().Num(), 0);
+
+	// A key the provider refuses: the failure is reported, not swallowed.
+	State->Ask();
+	AddCommand(new FFunctionLatentCommand([State]() { return State->Waited(1); }));
+	AddCommand(new FFunctionLatentCommand([this, State]()
+	{
+		TestEqual(TEXT("the refused key was answered"), State->Answers, 1);
+		TestFalse(TEXT("the refused key fails"), State->bLastOk);
+		TestFalse(TEXT("the failure says why"), State->LastError.IsEmpty());
+		TestEqual(TEXT("still no list"), State->Backend->GetCachedModels().Num(), 0);
+
+		// The user saves a working key while the bridge is still running with the old one. Two parts of
+		// the panel ask at once (the Setup tab and the Model menu); both must be answered.
+		State->Key = TEXT("cursor_test_key");
+		State->Ask();
+		State->Ask();
+		return true;
+	}));
+	AddCommand(new FFunctionLatentCommand([State]() { return State->Waited(3); }));
+	AddCommand(new FFunctionLatentCommand([this, State]()
+	{
+		TestEqual(TEXT("both askers were answered"), State->Answers, 3);
+		TestTrue(FString::Printf(TEXT("the new key is used without restarting the editor (%s)"), *State->LastError), State->bLastOk);
+		TestEqual(TEXT("the stand-in catalogue arrived"), State->LastModels.Num(), 2);
+		if (State->LastModels.Num() > 0)
+		{
+			TestEqual(TEXT("first model id"), State->LastModels[0].Id, FString(TEXT("stand-in-large")));
+			TestEqual(TEXT("first model name"), State->LastModels[0].DisplayName, FString(TEXT("Stand-in Large")));
+		}
+		TestEqual(TEXT("the list is kept for the Model menu"), State->Backend->GetCachedModels().Num(), 2);
+		// Drop the backend, and its Node process, now that everything has been checked.
+		State->Backend.Reset();
+		return true;
+	}));
+	return true;
+}
+
 #endif

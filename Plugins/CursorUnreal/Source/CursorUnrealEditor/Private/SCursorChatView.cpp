@@ -737,8 +737,11 @@ void SCursorChatView::BindSession()
 		Session->OnStateChanged.AddSP(this, &SCursorChatView::HandleStateChanged);
 	}
 	Note.Reset();
+	bFetchingModels = false;
 	UpdateModelLabel();
 	RebuildItems();
+	// A provider chosen for the first time has no list on disk yet.
+	FetchModelsIfMissing();
 }
 
 void SCursorChatView::UnbindSession()
@@ -1067,13 +1070,16 @@ TSharedRef<SWidget> SCursorChatView::BuildModelMenu()
 	}
 	if (Models.Num() == 0)
 	{
+		FetchModelsIfMissing();
 		Menu.AddWidget(
 			SNew(SBox)
 			.Padding(FMargin(12.0f, 4.0f))
 			[
 				SNew(STextBlock)
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-				.Text(LOCTEXT("NoModels", "No model list yet. Add a key in the Setup tab, then refresh."))
+				.Text(bFetchingModels
+					? LOCTEXT("FetchingModels", "Fetching the model list. Open this menu again in a moment.")
+					: LOCTEXT("NoModels", "No model list yet. Add a key in the Setup tab, then refresh."))
 			],
 			FText::GetEmpty());
 	}
@@ -1113,6 +1119,37 @@ void SCursorChatView::RefreshModels()
 		if (const TSharedPtr<SCursorChatView> Self = Weak.Pin())
 		{
 			Self->SetNote(bOk ? FString::Printf(TEXT("Model list updated: %d models."), Models.Num()) : Error, !bOk);
+			Self->UpdateModelLabel();
+		}
+	});
+}
+
+void SCursorChatView::FetchModelsIfMissing()
+{
+	// Tests and screenshots must never reach a provider on their own.
+	if (!Session.IsValid() || bFetchingModels || FApp::IsUnattended() || GIsAutomationTesting)
+	{
+		return;
+	}
+	if (Session->GetBackend().GetCachedModels().Num() > 0)
+	{
+		return;
+	}
+	bFetchingModels = true;
+	const TWeakPtr<SCursorChatView> Weak = SharedThis(this);
+	const TWeakPtr<FAgentSession> ForSession = Session;
+	Session->GetBackend().RefreshModels([Weak, ForSession](bool bOk, const TArray<FAgentModelInfo>& Models, const FString&)
+	{
+		const TSharedPtr<SCursorChatView> Self = Weak.Pin();
+		if (!Self.IsValid() || Self->Session != ForSession.Pin())
+		{
+			return;
+		}
+		Self->bFetchingModels = false;
+		// Failing is the usual case before a key is saved, and the Model menu already says what to do.
+		if (bOk)
+		{
+			Self->SetNote(FString::Printf(TEXT("Model list fetched: %d models. Pick one from the Model menu."), Models.Num()), false);
 			Self->UpdateModelLabel();
 		}
 	});
