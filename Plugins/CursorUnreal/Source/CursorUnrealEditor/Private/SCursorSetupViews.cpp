@@ -331,7 +331,7 @@ void SCursorSetupView::Construct(const FArguments& InArgs)
 			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			.Text(LOCTEXT("KeysIntro",
 				"Keys are kept in the operating system's credential store, not in the project or its config files, and are sent only to the provider they belong to. "
-				"You need the key for the provider you choose below, not both."))
+				"Saving a key also selects that provider, so a Cursor key alone is enough to load Cursor models — you do not need an Anthropic key."))
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -578,25 +578,33 @@ FReply SCursorSetupView::HandleSaveKey(FKeyRow* Row)
 		return FReply::Handled();
 	}
 
-	// A key for the provider that is not selected does nothing until the provider is changed. Say so, rather than look as if the key failed.
+	// Saving a key selects that provider so the model list check talks to the right service.
 	const bool bIsCursorKey = Row == &CursorKey;
-	const bool bCursorSelected = UCursorUnrealSettings::Get()->Provider == ECursorProvider::Cursor;
-	if (bIsCursorKey != bCursorSelected)
+	const ECursorProvider Wanted = bIsCursorKey ? ECursorProvider::Cursor : ECursorProvider::Anthropic;
+	UCursorUnrealSettings* Settings = UCursorUnrealSettings::GetMutable();
+	const bool bSwitched = Settings->Provider != Wanted;
+	if (bSwitched)
 	{
-		SetNote(FString::Printf(TEXT("Key saved, but not in use: Provider is set to %s. To use this key, change Provider to %s under Settings below."),
-			bCursorSelected ? TEXT("Cursor") : TEXT("Anthropic"), bIsCursorKey ? TEXT("Cursor") : TEXT("Anthropic")), false);
-		return FReply::Handled();
+		Settings->Provider = Wanted;
+		Settings->SaveConfig();
 	}
+	// Always rebuild: a new key must reach the backend (and the Cursor bridge must start with it).
+	FCursorEditorState::Get().RebuildSession();
 
 	const TSharedPtr<FAgentSession> Session = FCursorEditorState::Get().GetSession();
 	if (!Session.IsValid())
 	{
-		SetNote(TEXT("Key saved."), false);
+		const FString Why = FCursorEditorState::Get().GetProblem().ToString();
+		SetNote(Why.IsEmpty()
+			? TEXT("Key saved, but the provider could not start.")
+			: TEXT("Key saved, but the provider could not start. ") + Why, true);
 		return FReply::Handled();
 	}
 
-	// Asking for the model list shows at once whether the key works, and fills the Model menu in the Chat tab.
-	SetNote(TEXT("Key saved. Checking it by asking for the model list..."), false);
+	SetNote(bSwitched
+		? FString::Printf(TEXT("Key saved. Provider set to %s. Checking it by asking for the model list..."),
+			bIsCursorKey ? TEXT("Cursor") : TEXT("Anthropic"))
+		: TEXT("Key saved. Checking it by asking for the model list..."), false);
 	const TWeakPtr<SCursorSetupView> Weak = SharedThis(this);
 	Session->GetBackend().RefreshModels([Weak](bool bOk, const TArray<FAgentModelInfo>& Models, const FString& Error)
 	{

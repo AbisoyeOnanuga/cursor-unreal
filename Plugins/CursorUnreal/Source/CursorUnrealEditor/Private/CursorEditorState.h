@@ -22,6 +22,8 @@ public:
 
 	/** Replaces the session if the provider setting no longer matches it. A running turn is stopped. */
 	void SyncWithSettings();
+	/** Tears down the session and builds it again from the current settings (e.g. after a key is saved). */
+	void RebuildSession();
 
 	/** Puts a ready-made session in place. Used for the documentation screenshots and by tests. */
 	void UseSession(const TSharedPtr<FAgentSession>& InSession);

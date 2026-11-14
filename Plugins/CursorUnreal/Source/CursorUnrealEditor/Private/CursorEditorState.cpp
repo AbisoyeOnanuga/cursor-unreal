@@ -36,6 +36,16 @@ void FCursorEditorState::SyncWithSettings()
 	}
 }
 
+void FCursorEditorState::RebuildSession()
+{
+	if (bPinned)
+	{
+		return;
+	}
+	Rebuild();
+	OnSessionReplaced.Broadcast();
+}
+
 void FCursorEditorState::UseSession(const TSharedPtr<FAgentSession>& InSession)
 {
 	Session = InSession;
