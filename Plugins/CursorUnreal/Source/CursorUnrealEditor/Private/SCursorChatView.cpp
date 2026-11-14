@@ -7,6 +7,10 @@
 #include "CursorEditorStyle.h"
 #include "CursorJson.h"
 #include "CursorLogCapture.h"
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
+#include "Input/DragAndDrop.h"
+#include "SCursorImageStrip.h"
 #include "Editor.h"
 #include "Engine/Selection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -98,10 +102,21 @@ void SCursorChatItem::Construct(const FArguments& InArgs, const TSharedRef<FAgen
 			.BorderImage(FCursorEditorStyle::Brush(TEXT("Bubble.User")))
 			.Padding(FMargin(10.0f, 8.0f))
 			[
-				SAssignNew(PlainText, SMultiLineEditableText)
-				.IsReadOnly(true)
-				.AutoWrapText(true)
-				.TextStyle(&BodyStyle())
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SAssignNew(ImageStrip, SCursorImageStrip)
+					.ThumbHeight(96.0f)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SAssignNew(PlainText, SMultiLineEditableText)
+					.IsReadOnly(true)
+					.AutoWrapText(true)
+					.TextStyle(&BodyStyle())
+				]
 			]
 		];
 		break;
@@ -155,6 +170,10 @@ void SCursorChatItem::Construct(const FArguments& InArgs, const TSharedRef<FAgen
 	case EAgentItemKind::Tool:
 		ChildSlot
 		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
 			MakeCollapsible(
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()
@@ -189,6 +208,15 @@ void SCursorChatItem::Construct(const FArguments& InArgs, const TSharedRef<FAgen
 					.AutoWrapText(true)
 					.Font(FCursorEditorStyle::Mono())
 				])
+			]
+			// What the tool showed the model, such as a screenshot.
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(FMargin(0.0f, 4.0f, 0.0f, 0.0f))
+			[
+				SAssignNew(ImageStrip, SCursorImageStrip)
+				.ThumbHeight(140.0f)
+			]
 		];
 		break;
 
@@ -469,6 +497,10 @@ void SCursorChatItem::RefreshAssistant()
 
 void SCursorChatItem::Refresh()
 {
+	if (ImageStrip.IsValid())
+	{
+		ImageStrip->SetImages(Item->Images);
+	}
 	switch (Item->Kind)
 	{
 	case EAgentItemKind::Assistant:
@@ -665,6 +697,50 @@ void SCursorChatView::Construct(const FArguments& InArgs)
 					LOCTEXT("CtxLogTip", "The last warnings and errors from the Output Log."),
 					&SCursorChatView::bIncludeLogProblems)
 			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ContentPadding(FMargin(6.0f, 2.0f))
+				.ToolTipText(LOCTEXT("AttachPictureTip",
+					"Attach reference pictures: concept art, a sketch of a layout, a screenshot of what looks wrong. PNG, JPEG, BMP or TGA, up to 8 per message.\n"
+					"You can also paste a picture into the message box with Ctrl+V, or drop picture files onto this panel.\n"
+					"Pictures are sent to the model provider with your message. Copies are kept under Saved/CursorUnreal/Attachments on this machine."))
+				.IsEnabled_Lambda([this]() { return Session.IsValid(); })
+				.OnClicked(this, &SCursorChatView::HandleAttachClicked)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+					[
+						SNew(SImage)
+						.Image(FAppStyle::GetBrush("Icons.Plus"))
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("AttachPicture", "Picture"))
+					]
+				]
+			]
+		]
+
+		// Pictures waiting to go with the message.
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(FMargin(8.0f, 4.0f, 8.0f, 0.0f))
+		[
+			SAssignNew(PendingStrip, SCursorImageStrip)
+			.ThumbHeight(64.0f)
+			.OnRemoved(this, &SCursorChatView::RemoveAttachedImage)
 		]
 
 		// The message box.
@@ -684,7 +760,8 @@ void SCursorChatView::Construct(const FArguments& InArgs)
 					.AutoWrapText(true)
 					.ModiferKeyForNewLine(EModifierKey::Shift)
 					.ClearKeyboardFocusOnCommit(false)
-					.HintText(LOCTEXT("InputHint", "Message the agent. Enter sends, Shift+Enter starts a new line."))
+					.HintText(LOCTEXT("InputHint", "Message the agent. Enter sends, Shift+Enter starts a new line. Ctrl+V pastes a picture."))
+					.OnKeyDownHandler(this, &SCursorChatView::HandleInputKeyDown)
 					.OnTextCommitted(this, &SCursorChatView::HandleInputCommitted)
 				]
 			]
@@ -873,10 +950,16 @@ void SCursorChatView::Send()
 	{
 		return;
 	}
+	FAgentTurnRequest Request;
+	Request.Text = Input->GetText().ToString();
+	Request.Context = GatherContext();
+	Request.Images = PendingImages;
 	FText WhyNot;
-	if (Session->Send(Input->GetText().ToString(), GatherContext(), WhyNot))
+	if (Session->Send(Request, WhyNot))
 	{
 		Input->SetText(FText::GetEmpty());
+		PendingImages.Reset();
+		RefreshAttachedStrip();
 		bStickToBottom = true;
 		bScrollPending = true;
 	}
@@ -884,6 +967,168 @@ void SCursorChatView::Send()
 	{
 		SetNote(WhyNot.ToString(), true);
 	}
+}
+
+// --- Pictures --------------------------------------------------------------------------------
+
+void SCursorChatView::RefreshAttachedStrip()
+{
+	TArray<FAgentItemImage> Entries;
+	for (const FCursorImage& Image : PendingImages)
+	{
+		Entries.AddDefaulted_GetRef().Image = Image;
+	}
+	PendingStrip->SetImages(Entries);
+}
+
+int32 SCursorChatView::AttachImages(const TArray<FCursorImage>& Images)
+{
+	int32 Taken = 0;
+	FString Problem;
+	for (const FCursorImage& Image : Images)
+	{
+		if (!Image.IsValid())
+		{
+			continue;
+		}
+		const FString Hash = Image.Hash();
+		if (PendingImages.ContainsByPredicate([&Hash](const FCursorImage& Existing) { return Existing.Hash() == Hash; }))
+		{
+			Problem = FString::Printf(TEXT("'%s' is already attached."), *Image.Name);
+			continue;
+		}
+		TArray<FCursorImage> Proposed = PendingImages;
+		Proposed.Add(Image);
+		const FString WhyNot = CursorAgent::CheckMessageImages(Proposed);
+		if (!WhyNot.IsEmpty())
+		{
+			Problem = WhyNot;
+			break;
+		}
+		PendingImages.Add(Image);
+		++Taken;
+	}
+	RefreshAttachedStrip();
+	if (!Problem.IsEmpty())
+	{
+		SetNote(Problem, true);
+	}
+	else if (Taken > 0)
+	{
+		Note.Reset();
+	}
+	return Taken;
+}
+
+int32 SCursorChatView::AttachFiles(const TArray<FString>& Files)
+{
+	TArray<FCursorImage> Images;
+	TArray<FString> Problems;
+	for (const FString& File : Files)
+	{
+		FCursorImage Image;
+		FString Error;
+		if (CursorImages::FromFile(File, Image, Error))
+		{
+			Images.Add(MoveTemp(Image));
+		}
+		else
+		{
+			Problems.Add(Error);
+		}
+	}
+	const int32 Taken = AttachImages(Images);
+	if (Problems.Num() > 0)
+	{
+		SetNote(FString::Join(Problems, TEXT(" ")), true);
+	}
+	return Taken;
+}
+
+void SCursorChatView::RemoveAttachedImage(int32 Index)
+{
+	if (PendingImages.IsValidIndex(Index))
+	{
+		PendingImages.RemoveAt(Index);
+		RefreshAttachedStrip();
+		Note.Reset();
+	}
+}
+
+FReply SCursorChatView::HandleAttachClicked()
+{
+	IDesktopPlatform* Desktop = FDesktopPlatformModule::Get();
+	if (Desktop == nullptr)
+	{
+		return FReply::Handled();
+	}
+	static FString LastFolder;
+	TArray<FString> Files;
+	const void* Parent = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(AsShared());
+	if (Desktop->OpenFileDialog(Parent, TEXT("Attach pictures"), LastFolder, FString(),
+		TEXT("Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.tga)|*.png;*.jpg;*.jpeg;*.bmp;*.tga"), EFileDialogFlags::Multiple, Files) && Files.Num() > 0)
+	{
+		LastFolder = FPaths::GetPath(Files[0]);
+		AttachFiles(Files);
+	}
+	return FReply::Handled();
+}
+
+FReply SCursorChatView::HandleInputKeyDown(const FGeometry& Geometry, const FKeyEvent& KeyEvent)
+{
+	const bool bPaste = (KeyEvent.GetKey() == EKeys::V && KeyEvent.IsControlDown() && !KeyEvent.IsAltDown())
+		|| (KeyEvent.GetKey() == EKeys::Insert && KeyEvent.IsShiftDown());
+	if (!bPaste)
+	{
+		return FReply::Unhandled();
+	}
+	TArray<FCursorImage> Images;
+	TArray<FString> Problems;
+	// False when the clipboard holds text or nothing usable: the text box then pastes as it always does.
+	if (!CursorImages::ReadClipboard(Images, Problems))
+	{
+		return FReply::Unhandled();
+	}
+	AttachImages(Images);
+	if (Problems.Num() > 0)
+	{
+		SetNote(FString::Join(Problems, TEXT(" ")), true);
+	}
+	return FReply::Handled();
+}
+
+FReply SCursorChatView::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	const TSharedPtr<FExternalDragOperation> Operation = DragDropEvent.GetOperationAs<FExternalDragOperation>();
+	if (Operation.IsValid() && Operation->HasFiles() && Operation->GetFiles().ContainsByPredicate([](const FString& File) { return CursorImages::IsImageFile(File); }))
+	{
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+FReply SCursorChatView::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	const TSharedPtr<FExternalDragOperation> Operation = DragDropEvent.GetOperationAs<FExternalDragOperation>();
+	if (!Operation.IsValid() || !Operation->HasFiles())
+	{
+		return FReply::Unhandled();
+	}
+	TArray<FString> Pictures;
+	for (const FString& File : Operation->GetFiles())
+	{
+		if (CursorImages::IsImageFile(File))
+		{
+			Pictures.Add(File);
+		}
+	}
+	if (Pictures.Num() == 0)
+	{
+		SetNote(FString::Printf(TEXT("Only pictures can be dropped here: %s."), *CursorImages::SupportedFormats()), true);
+		return FReply::Handled();
+	}
+	AttachFiles(Pictures);
+	return FReply::Handled();
 }
 
 FReply SCursorChatView::HandleSendOrStop()
@@ -904,6 +1149,8 @@ FReply SCursorChatView::HandleNewChat()
 	if (Session.IsValid())
 	{
 		Session->NewChat();
+		PendingImages.Reset();
+		RefreshAttachedStrip();
 		Note.Reset();
 		bStickToBottom = true;
 	}

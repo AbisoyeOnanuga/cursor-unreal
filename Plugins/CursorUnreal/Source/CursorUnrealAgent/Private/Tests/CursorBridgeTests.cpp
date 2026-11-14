@@ -3,6 +3,9 @@
 #include "AgentBackend.h"
 #include "CursorBridgeBackend.h"
 #include "CursorBridgeInstall.h"
+#include "CursorTestSupport.h"
+#include "CursorTool.h"
+#include "CursorToolRegistry.h"
 #include "CursorUnrealSettings.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
@@ -275,6 +278,109 @@ bool FCursorBridgeModelsTest::RunTest(const FString& Parameters)
 		}
 		TestEqual(TEXT("the list is kept for the Model menu"), State->Backend->GetCachedModels().Num(), 2);
 		// Drop the backend, and its Node process, now that everything has been checked.
+		State->Backend.Reset();
+		return true;
+	}));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCursorBridgeImagesTest,
+	"CursorUnreal.Agent.BridgeImages",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCursorBridgeImagesTest::RunTest(const FString& Parameters)
+{
+	using namespace CursorBridgeTests;
+	if (!FPaths::FileExists(FakeSdkPath()) || CursorBridge::FindNodeExecutable().IsEmpty())
+	{
+		AddWarning(TEXT("Node or the stand-in SDK is missing, so this test checked nothing."));
+		return true;
+	}
+
+	const TCHAR* Pack = TEXT("__bridgeimagetest");
+	const TSharedRef<FScopedCursorSettings> Settings = MakeShared<FScopedCursorSettings>();
+	const TSharedRef<CursorTest::FScopedPolicy> Policy = MakeShared<CursorTest::FScopedPolicy>(FName(Pack), ECursorApprovalPolicy::AllowAll);
+	const TSharedRef<FTurnState> State = MakeShared<FTurnState>();
+	const FCursorImage Sketch = CursorTest::MakeImage(41, 40, 30, false, TEXT("sketch.png"));
+	const FCursorImage Shot = CursorTest::MakeImage(42, 64, 36, true, TEXT("viewport (top)"));
+
+	FCursorToolBuilder(TEXT("__bridge_picture"), Pack)
+		.Describe(TEXT("Test tool: returns a picture."))
+		.Risk(ECursorToolRisk::ReadOnly)
+		.Run([Shot](const FCursorArgs&, const FCursorToolContext&)
+		{
+			FCursorToolResult Result = FCursorToolResult::Ok(TEXT("taken"));
+			Result.Images.Add(Shot);
+			return Result;
+		})
+		.Register();
+
+	FCursorBridgeBackendOptions Options;
+	Options.KeyProvider = []() { return FString(TEXT("cursor_test_key")); };
+	Options.SdkModuleOverride = FakeSdkPath();
+	Options.bSkipInstallProbe = true;
+	Options.bPersistModels = false;
+	State->Backend = MakeShared<FCursorBridgeBackend>(MoveTemp(Options));
+
+	// The stand-in SDK answers [[images]] with what it was told about the pictures it was sent.
+	FAgentTurnRequest First;
+	First.Text = TEXT("[[images]] What is in this?");
+	First.Images = { Sketch };
+	State->Backend->SendTurn(First, [State](const FAgentEvent& Event) { State->Events.Add(Event); });
+	AddCommand(new FCursorBridgeWaitIdle(State, FPlatformTime::Seconds() + 15.0));
+
+	AddCommand(new FFunctionLatentCommand([this, State, Sketch]()
+	{
+		FString Reply;
+		for (const FAgentEvent& Event : State->Events)
+		{
+			if (Event.Type == EAgentEventType::TextDelta)
+			{
+				Reply += Event.Text;
+			}
+			if (Event.Type == EAgentEventType::Error)
+			{
+				AddError(FString::Printf(TEXT("Bridge error: %s"), *Event.Text));
+			}
+		}
+		TestFalse(TEXT("the turn with a picture finished in time"), State->bTimedOut);
+		const FString Expected = FString::Printf(TEXT("[{\"mimeType\":\"image/png\",\"base64Chars\":%d,\"dimension\":{\"width\":40,\"height\":30}}]"), Sketch.ToBase64().Len());
+		TestEqual(TEXT("the picture reached the SDK whole, with its type and size"), Reply, Expected);
+
+		// Second turn: an editor tool returns a picture, which must reach the model as image content.
+		State->Events.Reset();
+		FAgentTurnRequest Second;
+		Second.Text = TEXT("[[tool:__bridge_picture]]");
+		State->Backend->SendTurn(Second, [State](const FAgentEvent& Event) { State->Events.Add(Event); });
+		return true;
+	}));
+	AddCommand(new FCursorBridgeWaitIdle(State, FPlatformTime::Seconds() + 45.0));
+
+	AddCommand(new FFunctionLatentCommand([this, State, Shot, Settings, Policy]()
+	{
+		FString Reply;
+		bool bChatToldOfPicture = false;
+		for (const FAgentEvent& Event : State->Events)
+		{
+			if (Event.Type == EAgentEventType::TextDelta)
+			{
+				Reply += Event.Text;
+			}
+			if (Event.Type == EAgentEventType::ToolCallFinished)
+			{
+				bChatToldOfPicture = Event.Images.Num() == 1 && Event.Images[0].Hash() == Shot.Hash();
+			}
+			if (Event.Type == EAgentEventType::Error)
+			{
+				AddError(FString::Printf(TEXT("Bridge error: %s"), *Event.Text));
+			}
+		}
+		TestFalse(TEXT("the turn with a tool picture finished in time"), State->bTimedOut);
+		TestTrue(FString::Printf(TEXT("the model received the tool's text (%s)"), *Reply), Reply.StartsWith(TEXT("Tool said: ")) && Reply.Contains(TEXT("taken")));
+		TestTrue(FString::Printf(TEXT("and then the picture, whole (%s)"), *Reply),
+			Reply.EndsWith(FString::Printf(TEXT("[image image/jpeg %d base64 chars]"), Shot.ToBase64().Len())));
+		TestTrue(TEXT("the chat is told which picture the model was shown"), bChatToldOfPicture);
 		State->Backend.Reset();
 		return true;
 	}));

@@ -14,6 +14,8 @@ public:
 		CursorToolPacks::RegisterAnimBlueprintPack();
 		CursorToolPacks::RegisterSoundPack();
 		CursorToolPacks::RegisterOptimisationPack();
+		CursorToolPacks::RegisterPlayPack();
+		CursorToolPacks::RegisterViewPack();
 	}
 
 	virtual void ShutdownModule() override
@@ -26,6 +28,8 @@ public:
 		CursorToolPacks::UnregisterAnimBlueprintPack();
 		CursorToolPacks::UnregisterSoundPack();
 		CursorToolPacks::UnregisterOptimisationPack();
+		CursorToolPacks::UnregisterPlayPack();
+		CursorToolPacks::UnregisterViewPack();
 	}
 };
 

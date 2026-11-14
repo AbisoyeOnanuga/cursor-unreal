@@ -64,6 +64,21 @@ namespace CursorTest
 		}
 	};
 
+	/** A small picture for tests. Different seeds give different pictures. bPhoto makes it a JPEG, otherwise a PNG. */
+	inline FCursorImage MakeImage(int32 Seed, int32 Width = 8, int32 Height = 6, bool bPhoto = false, const TCHAR* Name = TEXT("test picture"))
+	{
+		TArray<FColor> Pixels;
+		Pixels.SetNumUninitialized(Width * Height);
+		for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+		{
+			Pixels[Index] = FColor(static_cast<uint8>(Index * 37 + Seed * 53), static_cast<uint8>((Index / Width) * 19 + Seed * 101), static_cast<uint8>(Seed * 29), 255);
+		}
+		FCursorImage Image;
+		FString Error;
+		CursorImages::FromPixels(Pixels, Width, Height, Name, bPhoto, Image, Error);
+		return Image;
+	}
+
 	/** Calls a tool as the in-editor agent and returns its result. Only for tools that finish before returning. */
 	inline FCursorToolResult Call(const TCHAR* Tool, const TCHAR* ArgsJson = TEXT("{}"), const FString& Caller = FCursorToolRegistry::CallerNative)
 	{

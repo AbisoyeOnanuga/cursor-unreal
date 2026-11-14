@@ -16,12 +16,18 @@ public class CursorUnrealTools : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"Engine",
+			// FKey: key pins on Blueprint nodes are checked against the engine's key names.
+			"InputCore",
 			"Json",
 			"JsonUtilities",
 			"UnrealEd",
 			"AssetRegistry",
 			"AssetTools",
 			"ContentBrowser",
+			// play_test starts Play in the active level viewport.
+			"LevelEditor",
+			// Box shapes for volumes and brushes placed by actor_spawn.
+			"BSPUtils",
 			"Slate",
 			"SlateCore",
 			"Projects",

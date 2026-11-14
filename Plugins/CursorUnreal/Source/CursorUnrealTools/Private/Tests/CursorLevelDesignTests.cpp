@@ -25,8 +25,13 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Camera/CameraComponent.h"
+#include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerInput.h"
 #include "GameFramework/WorldSettings.h"
+#include "InputCoreTypes.h"
+#include "InputKeyEventArgs.h"
 #include "Interfaces/IPluginManager.h"
 #include "Internationalization/Regex.h"
 #include "Materials/MaterialInterface.h"
@@ -357,7 +362,7 @@ bool FCursorLevelDesignSkillTest::RunTest(const FString&)
 	}
 
 	TArray<FString> Texts = { Body };
-	for (const TCHAR* File : { TEXT("platformer.md"), TEXT("gameplay-kit.md") })
+	for (const TCHAR* File : { TEXT("platformer.md"), TEXT("gameplay-kit.md"), TEXT("player.md") })
 	{
 		TestTrue(FString::Printf(TEXT("SKILL.md tells the agent about %s"), File), Body.Contains(File));
 		FString Text;
@@ -969,5 +974,612 @@ bool FCursorLevelDesignPlayTest::RunTest(const FString&)
 	}
 	return true;
 }
+
+namespace CursorLevelDesignTest
+{
+	struct FPlayerKit
+	{
+		FString Character;
+		FString GameMode;
+	};
+
+	/** Builds the playable side-on character and its game mode exactly as Skills/unreal-level-design/player.md tells the agent to. */
+	FPlayerKit BuildPlayer(FAutomationTestBase& Test, FScopedTestAssets& Assets)
+	{
+		FPlayerKit Kit;
+		const FString P = Kit.Character = Assets.Add(TEXT("BP_PlatformerCharacter"));
+		const FString Defaults = FString::Printf(TEXT("%s.Default__%s_C"), *P, *FPackageName::GetShortName(P));
+
+		// --- Structure: the engine's Character, a visible block for a body, a camera on an arm.
+		Tool(Test, TEXT("blueprint_create"), Args(TEXT("{\"path\":\"{0}\",\"parent_class\":\"Character\"}"), P));
+		Tool(Test, TEXT("blueprint_add_component"), Args(TEXT("{\"blueprint\":\"{0}\",\"class\":\"StaticMeshComponent\",\"name\":\"Body\"}"), P));
+		Tool(Test, TEXT("blueprint_add_component"), Args(TEXT("{\"blueprint\":\"{0}\",\"class\":\"SpringArmComponent\",\"name\":\"CameraBoom\"}"), P));
+		Tool(Test, TEXT("blueprint_add_component"), Args(TEXT("{\"blueprint\":\"{0}\",\"class\":\"CameraComponent\",\"name\":\"Camera\",\"parent\":\"CameraBoom\"}"), P));
+		Compile(Test, P);
+
+		// A 50 x 50 x 170 cm block inside the capsule. It is only there to be seen: the capsule does the colliding.
+		Tool(Test, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"StaticMesh\":\"{1}\",\"RelativeScale3D\":{\"X\":0.5,\"Y\":0.5,\"Z\":1.7},")
+			TEXT("\"BodyInstance.CollisionProfileName\":\"NoCollision\",\"bGenerateOverlapEvents\":false}}"), TemplatePath(P, TEXT("Body")), CubePath));
+		// Side-on: the arm points down -Y whichever way the character faces, so the camera sits 900 cm out on +Y.
+		Tool(Test, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"TargetArmLength\":900,\"bDoCollisionTest\":false,\"bUsePawnControlRotation\":false,")
+			TEXT("\"bInheritPitch\":false,\"bInheritYaw\":false,\"bInheritRoll\":false,\"RelativeRotation\":{\"Pitch\":0,\"Yaw\":-90,\"Roll\":0}}}"), TemplatePath(P, TEXT("CameraBoom"))));
+		// Face the way it runs, and stay on the course's plane (Y cannot change).
+		Tool(Test, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"{0}\",\"properties\":{\"bUseControllerRotationYaw\":false}}"), Defaults));
+		Tool(Test, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"{0}:CharMoveComp\",\"properties\":{\"bOrientRotationToMovement\":true,\"bConstrainToPlane\":true,\"PlaneConstraintAxisSetting\":\"Y\"}}"), Defaults));
+		Compile(Test, P);
+
+		// --- Controls: every frame, ask the player controller which keys are down and move accordingly.
+		const FString Tick = AddNode(Test, P, TEXT("\"kind\":\"event\",\"name\":\"Tick\""));
+		const FString Controller = AddNode(Test, P, TEXT("\"kind\":\"call_function\",\"function\":\"GetPlayerController\",\"class\":\"GameplayStatics\""));
+		auto KeyReader = [&](const TCHAR* Function, const TCHAR* Key)
+		{
+			const FString Node = AddNode(Test, P, *FString::Printf(TEXT("\"kind\":\"call_function\",\"function\":\"%s\",\"class\":\"PlayerController\""), Function));
+			Connect(Test, P, Controller, TEXT("ReturnValue"), Node, TEXT("self"));
+			PinDefault(Test, P, Node, TEXT("Key"), Key);
+			return Node;
+		};
+		auto Math = [&](const TCHAR* Function)
+		{
+			return AddNode(Test, P, *FString::Printf(TEXT("\"kind\":\"call_function\",\"function\":\"%s\",\"class\":\"KismetMathLibrary\""), Function));
+		};
+		/** Either of two keys held gives 1, neither gives 0. */
+		auto HeldAsNumber = [&](const TCHAR* KeyA, const TCHAR* KeyB)
+		{
+			const FString A = KeyReader(TEXT("IsInputKeyDown"), KeyA);
+			const FString B = KeyReader(TEXT("IsInputKeyDown"), KeyB);
+			const FString Either = Math(TEXT("BooleanOR"));
+			const FString Number = Math(TEXT("SelectFloat"));
+			Connect(Test, P, A, TEXT("ReturnValue"), Either, TEXT("A"));
+			Connect(Test, P, B, TEXT("ReturnValue"), Either, TEXT("B"));
+			Connect(Test, P, Either, TEXT("ReturnValue"), Number, TEXT("bPickA"));
+			PinDefault(Test, P, Number, TEXT("A"), TEXT("1.0"));
+			PinDefault(Test, P, Number, TEXT("B"), TEXT("0.0"));
+			return Number;
+		};
+		auto Move = [&](const TCHAR* Direction, const FString& ScaleNode)
+		{
+			const FString Node = AddNode(Test, P, TEXT("\"kind\":\"call_function\",\"function\":\"AddMovementInput\",\"class\":\"Pawn\""));
+			PinDefault(Test, P, Node, TEXT("WorldDirection"), Direction);
+			Connect(Test, P, ScaleNode, TEXT("ReturnValue"), Node, TEXT("ScaleValue"));
+			return Node;
+		};
+
+		const FString MoveRight = Move(TEXT("(X=1,Y=0,Z=0)"), HeldAsNumber(TEXT("D"), TEXT("Right")));
+		const FString MoveLeft = Move(TEXT("(X=-1,Y=0,Z=0)"), HeldAsNumber(TEXT("A"), TEXT("Left")));
+		const FString MoveStick = Move(TEXT("(X=1,Y=0,Z=0)"), KeyReader(TEXT("GetInputAnalogKeyState"), TEXT("Gamepad_LeftX")));
+
+		const FString JumpKey = KeyReader(TEXT("WasInputKeyJustPressed"), TEXT("SpaceBar"));
+		const FString JumpButton = KeyReader(TEXT("WasInputKeyJustPressed"), TEXT("Gamepad_FaceButton_Bottom"));
+		const FString JumpEither = Math(TEXT("BooleanOR"));
+		const FString JumpBranch = AddNode(Test, P, TEXT("\"kind\":\"branch\""));
+		const FString Jump = AddNode(Test, P, TEXT("\"kind\":\"call_function\",\"function\":\"Jump\",\"class\":\"Character\""));
+		Connect(Test, P, JumpKey, TEXT("ReturnValue"), JumpEither, TEXT("A"));
+		Connect(Test, P, JumpButton, TEXT("ReturnValue"), JumpEither, TEXT("B"));
+		Connect(Test, P, JumpEither, TEXT("ReturnValue"), JumpBranch, TEXT("Condition"));
+
+		Connect(Test, P, Tick, TEXT("then"), MoveRight, TEXT("execute"));
+		Connect(Test, P, MoveRight, TEXT("then"), MoveLeft, TEXT("execute"));
+		Connect(Test, P, MoveLeft, TEXT("then"), MoveStick, TEXT("execute"));
+		Connect(Test, P, MoveStick, TEXT("then"), JumpBranch, TEXT("execute"));
+		Connect(Test, P, JumpBranch, TEXT("then"), Jump, TEXT("execute"));
+		Compile(Test, P);
+
+		// --- Game mode: Play spawns this character at the Player Start.
+		const FString G = Kit.GameMode = Assets.Add(TEXT("BP_PlatformerGameMode"));
+		Tool(Test, TEXT("blueprint_create"), Args(TEXT("{\"path\":\"{0}\",\"parent_class\":\"GameModeBase\"}"), G));
+		Compile(Test, G);
+		Tool(Test, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"{0}.Default__{1}_C\",\"properties\":{\"DefaultPawnClass\":\"{2}\"}}"), G, FPackageName::GetShortName(G), P));
+		Compile(Test, G);
+		return Kit;
+	}
+}
+
+// The character the skill tells the agent to build is driven by real key presses: the thing a user checks first,
+// and the thing that did not work, four times over, in the session this test came from.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorLevelDesignControlsTest, "CursorUnreal.LevelDesign.Controls", CursorTest::Flags)
+bool FCursorLevelDesignControlsTest::RunTest(const FString&)
+{
+	CursorTest::FScopedPolicy Policy(NAME_None, ECursorApprovalPolicy::AllowAll);
+	FScopedTestAssets Assets;
+	const FPlayerKit Kit = BuildPlayer(*this, Assets);
+	UClass* CharacterClass = GeneratedClass(Kit.Character);
+	UClass* GameModeClass = GeneratedClass(Kit.GameMode);
+	if (!CharacterClass || !GameModeClass || !CharacterClass->IsChildOf(ACharacter::StaticClass()))
+	{
+		AddError(TEXT("The player kit did not build."));
+		return false;
+	}
+	TestTrue(TEXT("the game mode spawns the character"), GameModeClass->GetDefaultObject<AGameModeBase>()->DefaultPawnClass == CharacterClass);
+
+	// The level uses the game mode: set through "WorldSettings", as the skill says, then put back.
+	if (UWorld* EditorWorld = CursorToolHelpers::GetEditorWorld())
+	{
+		AWorldSettings* Settings = EditorWorld->GetWorldSettings();
+		const TSubclassOf<AGameModeBase> Before = Settings->DefaultGameMode;
+		ON_SCOPE_EXIT { Settings->DefaultGameMode = Before; };
+		Tool(*this, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"WorldSettings\",\"properties\":{\"DefaultGameMode\":\"{0}\"}}"), Kit.GameMode));
+		TestTrue(TEXT("the level's game mode override is the new game mode"), Settings->DefaultGameMode == GameModeClass);
+	}
+
+	// The kit's invisible wall: not drawn, still solid.
+	{
+		FScopedLevelActors Placed;
+		const FString Wall = Placed.Add(TEXT("Wall_NearEdge"));
+		Tool(*this, TEXT("actor_spawn"), Args(TEXT("{\"class\":\"{0}\",\"location\":[0,250,6000],\"scale\":[10,0.2,3],\"label\":\"{1}\",\"folder\":\"CursorUnrealTests\"}"), CubePath, Wall));
+		Tool(*this, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"{0}.StaticMeshComponent0\",\"properties\":{\"bVisible\":false}}"), Wall));
+		FString Error;
+		const AStaticMeshActor* Actor = Cast<AStaticMeshActor>(CursorToolHelpers::FindActor(Wall, Error));
+		if (TestNotNull(TEXT("the wall was placed"), Actor))
+		{
+			const UStaticMeshComponent* Mesh = Actor->GetStaticMeshComponent();
+			TestFalse(TEXT("the wall is not drawn"), Mesh->IsVisible());
+			TestTrue(TEXT("the wall still collides"), Mesh->GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics);
+			TestTrue(TEXT("the wall still blocks pawns"), Mesh->GetCollisionResponseToChannel(ECC_Pawn) == ECR_Block);
+		}
+	}
+
+	// Projects created in UE 5 use Enhanced Input's player input class; older ones, and this project after the
+	// session's agent changed it, use the plain one. Reading keys from the controller has to work under both.
+	for (const TCHAR* InputClassPath : { TEXT("/Script/Engine.PlayerInput"), TEXT("/Script/EnhancedInput.EnhancedPlayerInput") })
+	{
+		UClass* InputClass = LoadClass<UPlayerInput>(nullptr, InputClassPath);
+		if (!InputClass)
+		{
+			Note(FString::Printf(TEXT("controls: %s is not available in this project, skipped"), InputClassPath));
+			continue;
+		}
+		const FString With = FString::Printf(TEXT("[%s] "), *InputClass->GetName());
+
+		FPlayWorld Play;
+		Play.Cube(FVector(0, 0, 0), FVector(20000, 1000, 100));
+		ACharacter* Hero = Play.World->SpawnActor<ACharacter>(CharacterClass, FVector(0, 0, 92), FRotator::ZeroRotator);
+		APlayerController* Controller = Play.World->SpawnActor<APlayerController>();
+		Controller->PlayerInput = NewObject<UPlayerInput>(Controller, InputClass);
+		Controller->InitInputSystem();
+		Controller->Possess(Hero);
+		Play.BeginPlay();
+		Play.Tick(0.5f);
+		TestTrue(With + TEXT("the character stands on the floor"), Hero->GetCharacterMovement()->IsMovingOnGround());
+
+		auto Press = [&](const FKey& Key) { Controller->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Pressed, 1.0f)); };
+		auto Release = [&](const FKey& Key) { Controller->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Released, 0.0f)); };
+		auto Stick = [&](const FKey& Key, float Value) { Controller->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Axis, Value)); };
+		auto HeldFor = [&](const FKey& Key, float Seconds)
+		{
+			const double From = Hero->GetActorLocation().X;
+			Press(Key);
+			Play.Tick(Seconds);
+			Release(Key);
+			const double Moved = Hero->GetActorLocation().X - From;
+			Play.Tick(0.6f); // come to rest
+			return Moved;
+		};
+
+		// Nothing pressed: nothing happens.
+		const FVector Rest = Hero->GetActorLocation();
+		Play.Tick(0.5f);
+		TestTrue(With + TEXT("no keys, no movement"), Hero->GetActorLocation().Equals(Rest, 1.0));
+
+		const double ByD = HeldFor(EKeys::D, 1.0f);
+		const double ByRight = HeldFor(EKeys::Right, 1.0f);
+		const double ByA = HeldFor(EKeys::A, 1.0f);
+		const double ByLeft = HeldFor(EKeys::Left, 1.0f);
+		Note(FString::Printf(TEXT("controls %s: one second of D moves %.0f cm, Right %.0f, A %.0f, Left %.0f"), *InputClass->GetName(), ByD, ByRight, ByA, ByLeft));
+		TestTrue(With + TEXT("D runs toward +X"), ByD > 400.0);
+		TestTrue(With + TEXT("Right arrow runs toward +X"), ByRight > 400.0);
+		TestTrue(With + TEXT("A runs toward -X"), ByA < -400.0);
+		TestTrue(With + TEXT("Left arrow runs toward -X"), ByLeft < -400.0);
+		TestTrue(With + TEXT("the character faces the way it last ran (-X)"), FMath::Abs(FMath::FindDeltaAngleDegrees(Hero->GetActorRotation().Yaw, 180.0)) < 10.0);
+
+		// A key the graph does not read does nothing.
+		TestTrue(With + TEXT("W is not bound"), FMath::Abs(HeldFor(EKeys::W, 0.5f)) < 1.0);
+
+		// The stick: a gamepad reports its axes every frame.
+		double From = Hero->GetActorLocation().X;
+		Play.Tick(1.0f, [&] { Stick(EKeys::Gamepad_LeftX, 1.0f); });
+		const double ByStickRight = Hero->GetActorLocation().X - From;
+		Play.Tick(0.6f, [&] { Stick(EKeys::Gamepad_LeftX, 0.0f); });
+		From = Hero->GetActorLocation().X;
+		Play.Tick(1.0f, [&] { Stick(EKeys::Gamepad_LeftX, -1.0f); });
+		const double ByStickLeft = Hero->GetActorLocation().X - From;
+		Play.Tick(0.6f, [&] { Stick(EKeys::Gamepad_LeftX, 0.0f); });
+		Note(FString::Printf(TEXT("controls %s: one second of left stick right moves %.0f cm, left %.0f"), *InputClass->GetName(), ByStickRight, ByStickLeft));
+		TestTrue(With + TEXT("stick right runs toward +X"), ByStickRight > 400.0);
+		TestTrue(With + TEXT("stick left runs toward -X"), ByStickLeft < -400.0);
+
+		// Jump: Space, and the gamepad's bottom face button (A on an Xbox pad). Held keys do not jump again.
+		for (const FKey& JumpKey : { EKeys::SpaceBar, EKeys::Gamepad_FaceButton_Bottom })
+		{
+			const double Ground = FPlayWorld::FeetZ(Hero);
+			double Apex = Ground;
+			int32 TakeOffs = 0;
+			bool bWasOnGround = true;
+			Press(JumpKey);
+			Play.Tick(2.5f, [&]
+			{
+				Apex = FMath::Max(Apex, FPlayWorld::FeetZ(Hero));
+				const bool bOnGround = Hero->GetCharacterMovement()->IsMovingOnGround();
+				TakeOffs += (bWasOnGround && !bOnGround) ? 1 : 0;
+				bWasOnGround = bOnGround;
+			});
+			Release(JumpKey);
+			Play.Tick(0.2f);
+			Note(FString::Printf(TEXT("controls %s: %s jumps %.1f cm, %d take-off(s) while held"), *InputClass->GetName(), *JumpKey.ToString(), Apex - Ground, TakeOffs));
+			TestTrue(With + JumpKey.ToString() + TEXT(" jumps the default 90 cm"), FMath::IsNearlyEqual(Apex - Ground, 90.0, 5.0));
+			TestEqual(With + JumpKey.ToString() + TEXT(" held jumps once"), TakeOffs, 1);
+		}
+
+		// Side-on: the camera is 900 cm out on +Y looking back at the character, whichever way it faces.
+		const UCameraComponent* Camera = Hero->FindComponentByClass<UCameraComponent>();
+		if (TestNotNull(With + TEXT("the character has a camera"), Camera))
+		{
+			const FVector Offset = Camera->GetComponentLocation() - Hero->GetActorLocation();
+			Note(FString::Printf(TEXT("controls %s: camera offset %s, looking along %s"), *InputClass->GetName(), *Offset.ToCompactString(), *Camera->GetForwardVector().ToCompactString()));
+			TestTrue(With + TEXT("the camera is 900 cm out on +Y"), Offset.Equals(FVector(0, 900, 0), 5.0));
+			TestTrue(With + TEXT("the camera looks along -Y"), Camera->GetForwardVector().Equals(FVector(0, -1, 0), 0.02));
+		}
+
+		// The plane lock: a push across the course goes nowhere.
+		const double YBefore = Hero->GetActorLocation().Y;
+		Play.Tick(0.5f, [&] { Hero->AddMovementInput(FVector(0, 1, 0)); });
+		TestTrue(With + TEXT("the character cannot leave the course's plane"), FMath::IsNearlyEqual(Hero->GetActorLocation().Y, YBefore, 1.0));
+
+		// The body block is for looks only.
+		const UStaticMeshComponent* Body = Hero->FindComponentByClass<UStaticMeshComponent>();
+		if (TestNotNull(With + TEXT("the character has a body mesh"), Body))
+		{
+			TestTrue(With + TEXT("the body shows the cube"), Body->GetStaticMesh() != nullptr);
+			TestTrue(With + TEXT("the body does not collide"), Body->GetCollisionEnabled() == ECollisionEnabled::NoCollision);
+		}
+	}
+	return true;
+}
+
+namespace CursorLevelDesignTest
+{
+	/**
+	 * Sprint for the player character, exactly as Skills/unreal-level-design/player.md tells the agent to add it:
+	 * one batch, in which later calls name the nodes that earlier calls made.
+	 */
+	FCursorToolResult BuildSprint(FAutomationTestBase& Test, const FString& P)
+	{
+		return Tool(Test, TEXT("batch"), Args(TEXT("{\"brief\":true,\"calls\":[")
+			TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"shift\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"input_key\",\"key\":\"LeftShift\"}},")
+			TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"move\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"variable_get\",\"name\":\"CharacterMovement\"}},")
+			TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"fast\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"variable_set\",\"name\":\"MaxWalkSpeed\",\"class\":\"CharacterMovementComponent\"}},")
+			TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"slow\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"variable_set\",\"name\":\"MaxWalkSpeed\",\"class\":\"CharacterMovementComponent\"}},")
+			TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$shift.id\",\"from_pin\":\"Pressed\",\"to_node\":\"$fast.id\",\"to_pin\":\"execute\"}},")
+			TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$shift.id\",\"from_pin\":\"Released\",\"to_node\":\"$slow.id\",\"to_pin\":\"execute\"}},")
+			TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$move.id\",\"from_pin\":\"CharacterMovement\",\"to_node\":\"$fast.id\",\"to_pin\":\"self\"}},")
+			TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$move.id\",\"from_pin\":\"CharacterMovement\",\"to_node\":\"$slow.id\",\"to_pin\":\"self\"}},")
+			TEXT("{\"tool\":\"blueprint_set_pin_default\",\"args\":{\"blueprint\":\"{0}\",\"node\":\"$fast.id\",\"pin\":\"MaxWalkSpeed\",\"value\":\"1200\"}},")
+			TEXT("{\"tool\":\"blueprint_set_pin_default\",\"args\":{\"blueprint\":\"{0}\",\"node\":\"$slow.id\",\"pin\":\"MaxWalkSpeed\",\"value\":\"600\"}},")
+			TEXT("{\"tool\":\"blueprint_compile\",\"args\":{\"blueprint\":\"{0}\"}}]}"), P));
+	}
+
+	bool HasPin(const FCursorToolResult& Node, const TCHAR* Name)
+	{
+		if (!Node.Structured.IsValid())
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& Pin : Node.Structured->GetArrayField(TEXT("pins")))
+		{
+			if (Pin->AsObject()->GetStringField(TEXT("name")) == Name)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
+// The node kinds added after the first real session could not build sprint, a camera that moves, or a loop:
+// key events, properties of another object, casts and the standard macros. Built through the tools, then played.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorLevelDesignNodeKindsTest, "CursorUnreal.LevelDesign.NodeKinds", CursorTest::Flags)
+bool FCursorLevelDesignNodeKindsTest::RunTest(const FString&)
+{
+	CursorTest::FScopedPolicy Policy(NAME_None, ECursorApprovalPolicy::AllowAll);
+	FScopedTestAssets Assets;
+	const FPlayerKit Kit = BuildPlayer(*this, Assets);
+	const FString P = Kit.Character;
+
+	// --- Sprint: a key event writing a property of the movement component.
+	const FCursorToolResult Sprint = BuildSprint(*this, P);
+	TestFalse(TEXT("the sprint batch runs: ") + Sprint.Text, Sprint.bIsError);
+	TestTrue(TEXT("a brief batch does not echo the node descriptions"), Sprint.Text.Len() < 1500);
+	Compile(*this, P);
+
+	// The same key twice is the same node; an axis is not a key event; a property Blueprints cannot write says what to use.
+	FCursorToolResult R = Tool(*this, TEXT("blueprint_add_node"), Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"input_key\",\"key\":\"left shift\"}"), P));
+	TestTrue(TEXT("a second event for the same key returns the first"), R.Structured.IsValid() && R.Structured->HasField(TEXT("already_existed")));
+	R = CursorTest::Call(TEXT("blueprint_add_node"), *Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"input_key\",\"key\":\"Gamepad_LeftX\"}"), P));
+	TestTrue(TEXT("an axis is refused as a key event: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("GetInputAnalogKeyState")));
+	R = CursorTest::Call(TEXT("blueprint_add_node"), *Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"variable_set\",\"name\":\"WalkSpeed\",\"class\":\"CharacterMovementComponent\"}"), P));
+	TestTrue(TEXT("an unknown property names the close ones: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("MaxWalkSpeed")));
+	R = CursorTest::Call(TEXT("blueprint_add_node"), *Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"variable_set\",\"name\":\"RelativeLocation\",\"class\":\"SceneComponent\"}"), P));
+	TestTrue(TEXT("a read-only property names its setter: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("SetRelativeLocation")));
+	R = Tool(*this, TEXT("blueprint_add_node"), Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"variable_get\",\"name\":\"OrientRotationToMovement\",\"class\":\"CharacterMovementComponent\"}"), P));
+	TestTrue(TEXT("a bool can be named without its b: ") + R.Text, HasPin(R, TEXT("bOrientRotationToMovement")) && HasPin(R, TEXT("self")));
+	Tool(*this, TEXT("blueprint_remove_node"), Args(TEXT("{\"blueprint\":\"{0}\",\"node\":\"{1}\"}"), P, R.Structured.IsValid() ? R.Structured->GetStringField(TEXT("id")) : FString()));
+	// A class this Blueprint already is means its own variable, with no Target pin to wire.
+	R = Tool(*this, TEXT("blueprint_add_node"), Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"variable_get\",\"name\":\"bUseControllerRotationYaw\",\"class\":\"Pawn\"}"), P));
+	TestTrue(TEXT("its own class gives a plain variable node"), HasPin(R, TEXT("bUseControllerRotationYaw")) && !HasPin(R, TEXT("self")));
+	Tool(*this, TEXT("blueprint_remove_node"), Args(TEXT("{\"blueprint\":\"{0}\",\"node\":\"{1}\"}"), P, R.Structured.IsValid() ? R.Structured->GetStringField(TEXT("id")) : FString()));
+	Compile(*this, P);
+
+	// --- A cast and a loop, on an actor that moves itself so the test can see that they ran:
+	// BeginPlay -> ForLoop 0..2 { rise 10 cm } -> Completed -> cast the player's pawn to Character -> step 100 cm along X.
+	const FString A = Assets.Add(TEXT("BP_NodeKinds"));
+	Tool(*this, TEXT("blueprint_create"), Args(TEXT("{\"path\":\"{0}\",\"parent_class\":\"Actor\"}"), A));
+	const FCursorToolResult Graph = Tool(*this, TEXT("batch"), Args(TEXT("{\"calls\":[")
+		TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"begin\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"event\",\"name\":\"BeginPlay\"}},")
+		TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"loop\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"macro\",\"name\":\"ForLoop\"}},")
+		TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"rise\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"call_function\",\"function\":\"AddActorWorldOffset\",\"class\":\"Actor\"}},")
+		TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"pawn\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"call_function\",\"function\":\"GetPlayerPawn\",\"class\":\"GameplayStatics\"}},")
+		TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"cast\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"cast\",\"class\":\"Character\"}},")
+		TEXT("{\"tool\":\"blueprint_add_node\",\"as\":\"step\",\"args\":{\"blueprint\":\"{0}\",\"kind\":\"call_function\",\"function\":\"AddActorWorldOffset\",\"class\":\"Actor\"}},")
+		TEXT("{\"tool\":\"blueprint_set_pin_default\",\"args\":{\"blueprint\":\"{0}\",\"node\":\"$loop.id\",\"pin\":\"LastIndex\",\"value\":\"2\"}},")
+		TEXT("{\"tool\":\"blueprint_set_pin_default\",\"args\":{\"blueprint\":\"{0}\",\"node\":\"$rise.id\",\"pin\":\"DeltaLocation\",\"value\":\"(X=0,Y=0,Z=10)\"}},")
+		TEXT("{\"tool\":\"blueprint_set_pin_default\",\"args\":{\"blueprint\":\"{0}\",\"node\":\"$step.id\",\"pin\":\"DeltaLocation\",\"value\":\"(X=100,Y=0,Z=0)\"}},")
+		TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$begin.id\",\"from_pin\":\"then\",\"to_node\":\"$loop.id\",\"to_pin\":\"execute\"}},")
+		TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$loop.id\",\"from_pin\":\"LoopBody\",\"to_node\":\"$rise.id\",\"to_pin\":\"execute\"}},")
+		TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$loop.id\",\"from_pin\":\"Completed\",\"to_node\":\"$cast.id\",\"to_pin\":\"execute\"}},")
+		TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$pawn.id\",\"from_pin\":\"ReturnValue\",\"to_node\":\"$cast.id\",\"to_pin\":\"Object\"}},")
+		TEXT("{\"tool\":\"blueprint_connect_pins\",\"args\":{\"blueprint\":\"{0}\",\"from_node\":\"$cast.id\",\"from_pin\":\"then\",\"to_node\":\"$step.id\",\"to_pin\":\"execute\"}},")
+		TEXT("{\"tool\":\"blueprint_compile\",\"args\":{\"blueprint\":\"{0}\"}}]}"), A));
+	TestFalse(TEXT("the cast-and-loop batch runs: ") + Graph.Text, Graph.bIsError);
+	Compile(*this, A);
+	R = CursorTest::Call(TEXT("blueprint_add_node"), *Args(TEXT("{\"blueprint\":\"{0}\",\"kind\":\"macro\",\"name\":\"ForEver\"}"), A));
+	TestTrue(TEXT("an unknown macro lists the ones there are: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("ForEachLoop")) && R.Text.Contains(TEXT("DoOnce")));
+
+	UClass* ActorClass = GeneratedClass(A);
+	UClass* CharacterClass = GeneratedClass(P);
+	if (!ActorClass || !CharacterClass)
+	{
+		AddError(TEXT("The Blueprints did not build."));
+		return false;
+	}
+
+	{
+		FPlayWorld Play;
+		Play.Cube(FVector(0, 0, 0), FVector(2000, 2000, 100));
+		Play.Player(FVector(500, 0, 0));
+		AActor* WithPlayer = Play.World->SpawnActor<AActor>(ActorClass, FVector(0, 0, 500), FRotator::ZeroRotator);
+		Play.BeginPlay();
+		Play.Tick(0.1f);
+		Note(FString::Printf(TEXT("node kinds: with a Character as the player the actor moved to %s"), *WithPlayer->GetActorLocation().ToCompactString()));
+		TestTrue(TEXT("the loop ran three times and the cast succeeded"), WithPlayer->GetActorLocation().Equals(FVector(100, 0, 530), 0.5));
+	}
+	{
+		FPlayWorld Play;
+		AActor* Alone = Play.World->SpawnActor<AActor>(ActorClass, FVector(0, 0, 500), FRotator::ZeroRotator);
+		Play.BeginPlay();
+		Play.Tick(0.1f);
+		TestTrue(TEXT("with no player the cast fails and only the loop moves the actor"), Alone->GetActorLocation().Equals(FVector(0, 0, 530), 0.5));
+	}
+
+	// --- Sprint, played, under both kinds of player input.
+	for (const TCHAR* InputClassPath : { TEXT("/Script/Engine.PlayerInput"), TEXT("/Script/EnhancedInput.EnhancedPlayerInput") })
+	{
+		UClass* InputClass = LoadClass<UPlayerInput>(nullptr, InputClassPath);
+		if (!InputClass)
+		{
+			continue;
+		}
+		const FString With = FString::Printf(TEXT("[%s] "), *InputClass->GetName());
+		FPlayWorld Play;
+		Play.Cube(FVector(0, 0, 0), FVector(40000, 1000, 100));
+		ACharacter* Hero = Play.World->SpawnActor<ACharacter>(CharacterClass, FVector(0, 0, 92), FRotator::ZeroRotator);
+		APlayerController* Controller = Play.World->SpawnActor<APlayerController>();
+		Controller->PlayerInput = NewObject<UPlayerInput>(Controller, InputClass);
+		Controller->InitInputSystem();
+		Controller->Possess(Hero);
+		Play.BeginPlay();
+		Play.Tick(0.5f);
+
+		auto Press = [&](const FKey& Key) { Controller->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Pressed, 1.0f)); };
+		auto Release = [&](const FKey& Key) { Controller->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Released, 0.0f)); };
+		auto RunFor = [&](float Seconds)
+		{
+			const double From = Hero->GetActorLocation().X;
+			Press(EKeys::D);
+			Play.Tick(Seconds);
+			Release(EKeys::D);
+			const double Moved = Hero->GetActorLocation().X - From;
+			Play.Tick(0.8f);
+			return Moved;
+		};
+		const double Walk = RunFor(1.0f);
+		Press(EKeys::LeftShift);
+		Play.Tick(0.1f);
+		const double SprintSpeed = Hero->GetCharacterMovement()->MaxWalkSpeed;
+		const double Sprinted = RunFor(1.0f);
+		Release(EKeys::LeftShift);
+		Play.Tick(0.1f);
+		const double WalkAgain = RunFor(1.0f);
+		Note(FString::Printf(TEXT("sprint %s: one second walking %.0f cm, with LeftShift held %.0f cm (MaxWalkSpeed %.0f), after letting go %.0f cm"),
+			*InputClass->GetName(), Walk, Sprinted, SprintSpeed, WalkAgain));
+		TestTrue(With + TEXT("LeftShift pressed sets the faster speed"), FMath::IsNearlyEqual(SprintSpeed, 1200.0, 1.0));
+		TestTrue(With + TEXT("sprinting covers much more ground"), Sprinted > Walk * 1.4);
+		TestTrue(With + TEXT("letting go of LeftShift walks again"), FMath::IsNearlyEqual(WalkAgain, Walk, 20.0));
+	}
+	return true;
+}
+
+// Volumes and brushes placed by actor_spawn have a shape of the size asked for, and can be given a new one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorLevelDesignVolumesTest, "CursorUnreal.LevelDesign.Volumes", CursorTest::Flags)
+bool FCursorLevelDesignVolumesTest::RunTest(const FString&)
+{
+	CursorTest::FScopedPolicy Policy(NAME_None, ECursorApprovalPolicy::AllowAll);
+	FScopedLevelActors Placed;
+	auto SizeOf = [&](const FString& Label)
+	{
+		FString Error;
+		const AActor* Actor = CursorToolHelpers::FindActor(Label, Error);
+		return Actor ? Actor->GetComponentsBoundingBox(true).GetSize() : FVector::ZeroVector;
+	};
+
+	const FString Wall = Placed.Add(TEXT("Blocker"));
+	FCursorToolResult R = Tool(*this, TEXT("actor_spawn"), Args(TEXT("{\"class\":\"BlockingVolume\",\"location\":[0,300,7000],\"size\":[1000,40,600],\"label\":\"{0}\",\"folder\":\"CursorUnrealTests\"}"), Wall));
+	TestTrue(TEXT("a blocking volume is the size asked for: ") + SizeOf(Wall).ToCompactString(), SizeOf(Wall).Equals(FVector(1000, 40, 600), 1.0));
+	TestTrue(TEXT("the result reports the size and no warning: ") + R.Text, R.Text.Contains(TEXT("\"size\":[1000,40,600]")) && !R.Text.Contains(TEXT("no shape")));
+	{
+		FString Error;
+		const AActor* Actor = CursorToolHelpers::FindActor(Wall, Error);
+		const UPrimitiveComponent* Shape = Actor ? Cast<UPrimitiveComponent>(Actor->GetRootComponent()) : nullptr;
+		if (TestNotNull(TEXT("the volume has a shape component"), Shape))
+		{
+			TestTrue(TEXT("the blocking volume blocks pawns"), Shape->GetCollisionResponseToChannel(ECC_Pawn) == ECR_Block);
+			TestTrue(TEXT("the volume's centre is where it was placed"), Actor->GetComponentsBoundingBox(true).GetCenter().Equals(FVector(0, 300, 7000), 1.0));
+		}
+	}
+
+	R = Tool(*this, TEXT("actor_update"), Args(TEXT("{\"name\":\"{0}\",\"size\":[2000,40,300]}"), Wall));
+	TestTrue(TEXT("a volume can be given a new size: ") + SizeOf(Wall).ToCompactString(), SizeOf(Wall).Equals(FVector(2000, 40, 300), 1.0));
+
+	const FString Pit = Placed.Add(TEXT("KillZ"));
+	Tool(*this, TEXT("actor_spawn"), Args(TEXT("{\"class\":\"KillZVolume\",\"location\":[0,0,6500],\"label\":\"{0}\",\"folder\":\"CursorUnrealTests\"}"), Pit));
+	TestTrue(TEXT("a volume placed with no size is a 200 cm cube, not a point: ") + SizeOf(Pit).ToCompactString(), SizeOf(Pit).Equals(FVector(200, 200, 200), 1.0));
+
+	const FString Block = Placed.Add(TEXT("GeometryBrush"));
+	R = Tool(*this, TEXT("actor_spawn"), Args(TEXT("{\"class\":\"Brush\",\"location\":[0,-600,7000],\"size\":[300,300,100],\"label\":\"{0}\",\"folder\":\"CursorUnrealTests\"}"), Block));
+	TestTrue(TEXT("a brush is the size asked for: ") + SizeOf(Block).ToCompactString(), SizeOf(Block).Equals(FVector(300, 300, 100), 1.0));
+	TestTrue(TEXT("the result says a brush cannot move in play: ") + R.Text, R.Text.Contains(TEXT("cannot move")));
+
+	const FString Cube = Placed.Add(TEXT("NotABrush"));
+	R = CursorTest::Call(TEXT("actor_spawn"), *Args(TEXT("{\"class\":\"{0}\",\"location\":[0,0,7500],\"size\":[300,300,100],\"label\":\"{1}\"}"), CubePath, Cube));
+	TestTrue(TEXT("size on a mesh actor is refused and points at scale: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("scale")));
+	FString Error;
+	TestNull(TEXT("the refused actor was not left in the level"), CursorToolHelpers::FindActor(Cube, Error));
+	R = CursorTest::Call(TEXT("actor_spawn"), TEXT("{\"class\":\"TriggerVolume\",\"location\":[0,0,7500],\"size\":[0,100,100]}"));
+	TestTrue(TEXT("a zero size is refused: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("at least 1 cm")));
+	return true;
+}
+
+namespace CursorLevelDesignTest
+{
+	/** Everything a play test has to keep alive, and put back, across the frames it takes. */
+	struct FPlayTestState
+	{
+		CursorTest::FScopedPolicy Policy{ NAME_None, ECursorApprovalPolicy::AllowAll };
+		FScopedTestAssets Assets;
+		FScopedLevelActors Placed;
+		FPlayerKit Kit;
+		TSubclassOf<AGameModeBase> GameModeBefore;
+		FCursorToolResult Result;
+		bool bDone = false;
+		double StartedAt = 0.0;
+
+		~FPlayTestState()
+		{
+			if (UWorld* EditorWorld = CursorToolHelpers::GetEditorWorld())
+			{
+				EditorWorld->GetWorldSettings()->DefaultGameMode = GameModeBefore;
+			}
+		}
+	};
+}
+
+// play_test presses Play, holds the keys it is told to, and reports what the player did: the check the agent could
+// not make in the session where it said three times that controls worked.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorLevelDesignPlayToolTest, "CursorUnreal.LevelDesign.PlayTool", CursorTest::Flags)
+bool FCursorLevelDesignPlayToolTest::RunTest(const FString&)
+{
+	// Bad scripts are refused before Play starts.
+	{
+		CursorTest::FScopedPolicy Policy(NAME_None, ECursorApprovalPolicy::AllowAll);
+		FCursorToolResult R = CursorTest::Call(TEXT("play_test"), TEXT("{\"steps\":[{\"keys\":[\"Jump\"]}]}"));
+		TestTrue(TEXT("a name that is not a key is refused: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("not a key name")));
+		R = CursorTest::Call(TEXT("play_test"), TEXT("{\"steps\":[{\"keys\":[\"Gamepad_LeftX\"]}]}"));
+		TestTrue(TEXT("an axis under keys is refused: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("axes")));
+		R = CursorTest::Call(TEXT("play_test"), TEXT("{\"steps\":[{\"axes\":{\"D\":1}}]}"));
+		TestTrue(TEXT("a key under axes is refused: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("Buttons and keys go under 'keys'")));
+		R = CursorTest::Call(TEXT("play_test"), TEXT("{\"steps\":[{\"seconds\":50},{\"seconds\":50}]}"));
+		TestTrue(TEXT("a test longer than a minute is refused: ") + R.Text, R.bIsError && R.Text.Contains(TEXT("at most")));
+		R = CursorTest::Call(TEXT("play_test"), TEXT("{\"watch\":[\"NoSuchActor_123\"]}"));
+		TestTrue(TEXT("watching an actor that is not there is refused"), R.bIsError);
+		TestFalse(TEXT("none of those started Play"), GEditor->IsPlaySessionInProgress());
+	}
+
+	UWorld* EditorWorld = CursorToolHelpers::GetEditorWorld();
+	if (!TestNotNull(TEXT("a level is open"), EditorWorld))
+	{
+		return false;
+	}
+	const TSharedRef<FPlayTestState> State = MakeShared<FPlayTestState>();
+	State->GameModeBefore = EditorWorld->GetWorldSettings()->DefaultGameMode;
+	State->Kit = BuildPlayer(*this, State->Assets);
+	BuildSprint(*this, State->Kit.Character);
+	Tool(*this, TEXT("object_set_properties"), Args(TEXT("{\"object\":\"WorldSettings\",\"properties\":{\"DefaultGameMode\":\"{0}\"}}"), State->Kit.GameMode));
+
+	// A floor far above the template level's landscape, and a crate on it to watch.
+	const FString Floor = State->Placed.Add(TEXT("PlayFloor"));
+	const FString Crate = State->Placed.Add(TEXT("PlayCrate"));
+	Tool(*this, TEXT("actor_spawn"), Args(TEXT("{\"class\":\"{0}\",\"location\":[0,0,8950],\"scale\":[400,10,1],\"label\":\"{1}\",\"folder\":\"CursorUnrealTests\"}"), CubePath, Floor));
+	Tool(*this, TEXT("actor_spawn"), Args(TEXT("{\"class\":\"{0}\",\"location\":[-500,0,9050],\"label\":\"{1}\",\"folder\":\"CursorUnrealTests\"}"), CubePath, Crate));
+
+	const bool bFixedBefore = FApp::UseFixedTimeStep();
+	State->StartedAt = FPlatformTime::Seconds();
+	FCursorToolContext Ctx;
+	Ctx.Caller = FCursorToolRegistry::CallerNative;
+	Ctx.SessionId = TEXT("test");
+	FCursorToolRegistry::Get().Invoke(TEXT("play_test"), CursorJson::Parse(Args(TEXT("{\"start\":[0,0,9100],\"watch\":[\"{0}\"],\"steps\":[")
+		TEXT("{\"keys\":[\"D\"],\"seconds\":1.0},")
+		TEXT("{\"seconds\":0.8},")
+		TEXT("{\"keys\":[\"Space\"],\"seconds\":0.1},")
+		TEXT("{\"seconds\":1.4},")
+		TEXT("{\"keys\":[\"LeftShift\",\"D\"],\"seconds\":1.0},")
+		TEXT("{\"seconds\":0.8},")
+		TEXT("{\"axes\":{\"Gamepad_LeftX\":-1.0},\"seconds\":1.0}]}"), Crate)), Ctx,
+		[State](const FCursorToolResult& Result) { State->Result = Result; State->bDone = true; });
+	TestFalse(TEXT("the test does not finish in the call that starts it"), State->bDone);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, State, bFixedBefore]()
+	{
+		if (!State->bDone)
+		{
+			if (FPlatformTime::Seconds() - State->StartedAt > 240.0)
+			{
+				AddError(TEXT("play_test did not finish within four minutes."));
+				return true;
+			}
+			return false;
+		}
+		const FCursorToolResult& R = State->Result;
+		Note(FString::Printf(TEXT("play_test took %.1f s of real time and returned: %s"), FPlatformTime::Seconds() - State->StartedAt, *R.Text));
+		TestFalse(TEXT("play_test succeeds: ") + R.Text, R.bIsError);
+		TestFalse(TEXT("Play has stopped again"), GEditor->IsPlaySessionInProgress());
+		TestEqual(TEXT("the editor's time step setting is put back"), FApp::UseFixedTimeStep(), bFixedBefore);
+		if (R.bIsError || !R.Structured.IsValid())
+		{
+			return true;
+		}
+		const FJsonObject& Out = *R.Structured;
+		TestTrue(TEXT("the level's game mode was used"), Out.GetStringField(TEXT("game_mode")).StartsWith(TEXT("BP_PlatformerGameMode")));
+		TestTrue(TEXT("the player is the character from the kit"), Out.GetStringField(TEXT("pawn")).StartsWith(TEXT("BP_PlatformerCharacter")));
+		const TArray<TSharedPtr<FJsonValue>>& Steps = Out.GetArrayField(TEXT("steps"));
+		if (!TestEqual(TEXT("every step ran"), Steps.Num(), 7))
+		{
+			return true;
+		}
+		auto Moved = [&](int32 Index, int32 Axis) { return Steps[Index]->AsObject()->GetArrayField(TEXT("moved"))[Axis]->AsNumber(); };
+		auto Field = [&](int32 Index, const TCHAR* Name) { return Steps[Index]->AsObject()->GetNumberField(Name); };
+		TestTrue(TEXT("the player started on the floor where it was told to"), FMath::IsNearlyEqual(Steps[0]->AsObject()->GetArrayField(TEXT("from"))[2]->AsNumber(), 9092.0, 5.0));
+		TestTrue(TEXT("one second of D runs about 5 m along +X"), Moved(0, 0) > 400.0 && Moved(0, 0) < 650.0);
+		TestTrue(TEXT("with no keys the player comes to rest"), FMath::Abs(Field(1, TEXT("speed_at_end"))) < 1.0);
+		const double Rise = FMath::Max(Field(2, TEXT("highest_rise")), Field(3, TEXT("highest_rise")) + Moved(2, 2));
+		TestTrue(FString::Printf(TEXT("a tap of Space jumps about 90 cm (%.1f)"), Rise), FMath::IsNearlyEqual(Rise, 90.0, 6.0));
+		TestTrue(TEXT("the player is back on the ground after the jump"), Steps[3]->AsObject()->GetBoolField(TEXT("on_ground_at_end")));
+		TestTrue(TEXT("LeftShift and D together sprint"), Moved(4, 0) > Moved(0, 0) * 1.4);
+		TestTrue(TEXT("the stick pushed left runs along -X"), Moved(6, 0) < -400.0);
+		TestTrue(TEXT("the watched crate is reported where it is"), Steps[0]->AsObject()->GetObjectField(TEXT("watched"))->Values.Num() == 1);
+		TestTrue(TEXT("the camera is reported side-on, 900 cm out on +Y"),
+			FMath::IsNearlyEqual(Out.GetObjectField(TEXT("camera_at_end"))->GetArrayField(TEXT("offset_from_pawn"))[1]->AsNumber(), 900.0, 10.0));
+		return true;
+	}));
+	return true;
+}
+
 
 #endif // WITH_DEV_AUTOMATION_TESTS

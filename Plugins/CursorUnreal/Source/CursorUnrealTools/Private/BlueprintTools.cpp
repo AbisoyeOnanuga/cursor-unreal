@@ -14,11 +14,15 @@
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
+#include "InputCoreTypes.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
+#include "K2Node_DynamicCast.h"
 #include "K2Node_Event.h"
 #include "K2Node_ExecutionSequence.h"
 #include "K2Node_IfThenElse.h"
+#include "K2Node_InputKey.h"
+#include "K2Node_MacroInstance.h"
 #include "K2Node_Self.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
@@ -29,13 +33,16 @@
 #include "Logging/TokenizedMessage.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
+#include "Algo/Find.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/UObjectIterator.h"
 
 /*
  * Blueprint pack. Scope is what the public editor APIs do reliably in 5.6: create a Blueprint from a
  * parent class, read its structure, add variables / components / function graphs, add the common K2 nodes
- * (events, function calls, variable get/set, branch, sequence), wire and default pins, and compile with errors
- * returned. Anything fancier (macros, timelines, interfaces, animation graphs) goes through python_exec.
+ * (events, key events, function calls, variable get/set on this or another object, casts, branch, sequence, the
+ * standard loop and flow macros), wire and default pins, and compile with errors returned. Anything fancier
+ * (timelines, interfaces, animation graphs) goes through python_exec.
  * Edits stay in memory until asset_save.
  */
 
@@ -156,20 +163,289 @@ namespace
 	UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& Name, EEdGraphPinDirection Direction, FString& OutError)
 	{
 		TArray<FString> Candidates;
+		bool bHiddenMatch = false;
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
-			if (Pin->bHidden || (Direction != EGPD_MAX && Pin->Direction != Direction))
+			if (Direction != EGPD_MAX && Pin->Direction != Direction)
 			{
 				continue;
 			}
+			const bool bMatches = Pin->PinName.ToString().Equals(Name, ESearchCase::IgnoreCase) || Pin->GetDisplayName().ToString().Equals(Name, ESearchCase::IgnoreCase);
+			if (Pin->bHidden)
+			{
+				bHiddenMatch = bHiddenMatch || bMatches;
+				continue;
+			}
 			Candidates.Add(Pin->PinName.ToString());
-			if (Pin->PinName.ToString().Equals(Name, ESearchCase::IgnoreCase) || Pin->GetDisplayName().ToString().Equals(Name, ESearchCase::IgnoreCase))
+			if (bMatches)
 			{
 				return Pin;
 			}
 		}
-		OutError = FString::Printf(TEXT("Node %s has no %spin '%s'. Pins: %s"), *Node->GetName(),
-			Direction == EGPD_Input ? TEXT("input ") : Direction == EGPD_Output ? TEXT("output ") : TEXT(""), *Name, *FString::Join(Candidates, TEXT(", ")));
+		const TCHAR* DirectionText = Direction == EGPD_Input ? TEXT("input ") : Direction == EGPD_Output ? TEXT("output ") : TEXT("");
+		if (bHiddenMatch)
+		{
+			// A hidden pin is one the Blueprint editor never shows: the engine fills it in itself, usually through a
+			// dedicated node type. Saying "no such pin" with an empty list sent an agent round in circles.
+			OutError = FString::Printf(TEXT("Pin '%s' on node %s is hidden: the Blueprint editor does not let anyone set or wire it, and neither do these tools. "
+				"This function is meant to be used through a different node. Visible %spins: %s"),
+				*Name, *Node->GetName(), DirectionText, Candidates.Num() > 0 ? *FString::Join(Candidates, TEXT(", ")) : TEXT("none"));
+			return nullptr;
+		}
+		OutError = FString::Printf(TEXT("Node %s has no %spin '%s'. Pins: %s"), *Node->GetName(), DirectionText, *Name,
+			Candidates.Num() > 0 ? *FString::Join(Candidates, TEXT(", ")) : TEXT("none"));
+		return nullptr;
+	}
+
+	using CursorPackSupport::NormaliseKeyName;
+	using CursorPackSupport::Squash;
+
+	/**
+	 * The schema checks the text of vector, rotator, transform and colour pins and waves every other struct through
+	 * ("they'll be verified" when the call is compiled, where a bad value is quietly dropped). Reading the text into a
+	 * scratch copy of the struct here turns that silent loss into an error at the moment the value is set.
+	 */
+	bool CheckStructPinText(const UScriptStruct* Struct, const FString& Value, FString& OutError)
+	{
+		if (Value.IsEmpty())
+		{
+			return true;
+		}
+		FStructOnScope Scratch(Struct);
+		FStringOutputDevice Problems;
+		const TCHAR* End = Struct->ImportText(*Value, Scratch.GetStructMemory(), nullptr, PPF_None, &Problems, Struct->GetName());
+		const FString Rest = End ? FString(End).TrimStartAndEnd() : FString();
+		if (End && Rest.IsEmpty() && Problems.IsEmpty())
+		{
+			return true;
+		}
+		FString Example;
+		Struct->ExportText(Example, Scratch.GetStructMemory(), nullptr, nullptr, PPF_None, nullptr);
+		OutError = FString::Printf(TEXT("'%s' cannot be read as a %s%s%s. A value of this type looks like: %s"), *Value, *Struct->GetName(),
+			Rest.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (stopped at '%s')"), *Rest.Left(40)),
+			Problems.IsEmpty() ? TEXT("") : *(TEXT(": ") + FString(Problems).TrimStartAndEnd().Left(200)),
+			*Example);
+		return false;
+	}
+
+	/** Words of a CamelCase or snake_case name, lower case: "K2_SetActorLocation" gives set, actor, location. */
+	TArray<FString> NameWords(const FString& Name)
+	{
+		TArray<FString> Words;
+		FString Current;
+		for (int32 i = 0; i < Name.Len(); ++i)
+		{
+			const TCHAR Ch = Name[i];
+			const bool bBreak = !FChar::IsAlnum(Ch) || (FChar::IsUpper(Ch) && i > 0 && FChar::IsLower(Name[i - 1]));
+			if (bBreak && !Current.IsEmpty())
+			{
+				Words.Add(Current.ToLower());
+				Current.Reset();
+			}
+			if (FChar::IsAlnum(Ch))
+			{
+				Current.AppendChar(Ch);
+			}
+		}
+		if (!Current.IsEmpty())
+		{
+			Words.Add(Current.ToLower());
+		}
+		Words.Remove(TEXT("k2"));
+		return Words;
+	}
+
+	/** Why a function name was not found, with the nearest things that do exist: the same name elsewhere, a property, or similar names. */
+	FString DescribeMissingFunction(const UClass* Owner, const FString& FunctionName)
+	{
+		FString Out = FString::Printf(TEXT("%s has no Blueprint-callable function '%s'."), *Owner->GetName(), *FunctionName);
+
+		// The same name on a function library or a common gameplay class: the usual slip is the right function on the wrong class.
+		TArray<FString> Elsewhere;
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			const UClass* Class = *It;
+			if (Class == Owner || Class->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists) || Class->GetName().StartsWith(TEXT("SKEL_")) || Class->GetName().StartsWith(TEXT("REINST_")))
+			{
+				continue;
+			}
+			if (!Class->IsChildOf(UBlueprintFunctionLibrary::StaticClass()) && !Class->IsChildOf(AActor::StaticClass()) && !Class->IsChildOf(UActorComponent::StaticClass()))
+			{
+				continue;
+			}
+			for (const FString& Candidate : { FunctionName, TEXT("K2_") + FunctionName })
+			{
+				const UFunction* Function = Class->FindFunctionByName(FName(*Candidate), EIncludeSuperFlag::ExcludeSuper);
+				if (Function && Function->HasAnyFunctionFlags(FUNC_BlueprintCallable) && Elsewhere.Num() < 6)
+				{
+					Elsewhere.AddUnique(Class->GetName());
+				}
+			}
+		}
+		if (Elsewhere.Num() > 0)
+		{
+			Out += FString::Printf(TEXT(" A function with that name is on: %s. Pass that as 'class'."), *FString::Join(Elsewhere, TEXT(", ")));
+		}
+
+		// GetCharacterMovement is a C++ accessor; in Blueprint the same thing is the CharacterMovement property.
+		FString PropertyName = FunctionName;
+		if (!PropertyName.RemoveFromStart(TEXT("Get")))
+		{
+			PropertyName.RemoveFromStart(TEXT("Set"));
+		}
+		if (const FProperty* Property = FindFProperty<FProperty>(Owner, FName(*PropertyName)))
+		{
+			Out += FString::Printf(TEXT(" '%s' is a property of %s, not a function: in a Blueprint whose parent is %s, read it with kind variable_get and name %s."),
+				*Property->GetName(), *Owner->GetName(), *Owner->GetName(), *Property->GetName());
+		}
+
+		// Functions on this class that share most of the words.
+		const TArray<FString> Wanted = NameWords(FunctionName);
+		TArray<TPair<int32, FString>> Scored;
+		for (TFieldIterator<UFunction> It(Owner, EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			if (!It->HasAnyFunctionFlags(FUNC_BlueprintCallable))
+			{
+				continue;
+			}
+			FString Shown = It->GetName();
+			Shown.RemoveFromStart(TEXT("K2_"));
+			const TArray<FString> Words = NameWords(Shown);
+			int32 Shared = 0;
+			for (const FString& Word : Wanted)
+			{
+				// "get" and "set" alone say nothing about what a function is for.
+				Shared += (Word != TEXT("get") && Word != TEXT("set") && Words.Contains(Word)) ? 1 : 0;
+			}
+			if (Shared > 0)
+			{
+				Scored.Emplace(Shared * 100 - Words.Num(), Shown);
+			}
+		}
+		Scored.Sort([](const TPair<int32, FString>& A, const TPair<int32, FString>& B) { return A.Key > B.Key || (A.Key == B.Key && A.Value < B.Value); });
+		TArray<FString> Similar;
+		for (int32 i = 0; i < Scored.Num() && Similar.Num() < 8; ++i)
+		{
+			Similar.AddUnique(Scored[i].Value);
+		}
+		if (Similar.Num() > 0)
+		{
+			Out += FString::Printf(TEXT(" Similar functions on %s: %s."), *Owner->GetName(), *FString::Join(Similar, TEXT(", ")));
+		}
+		return Out;
+	}
+
+	/** Blueprint-callable functions on a class whose names contain every word of a property name: the setters and getters for it. */
+	FString AccessorHint(const UClass* Owner, const FString& PropertyName)
+	{
+		TArray<FString> Wanted = NameWords(PropertyName);
+		// "bOrientRotationToMovement" splits to b, orient...; the b says nothing.
+		Wanted.Remove(TEXT("b"));
+		TArray<FString> Found;
+		for (TFieldIterator<UFunction> It(Owner, EFieldIteratorFlags::IncludeSuper); It && Wanted.Num() > 0; ++It)
+		{
+			if (!It->HasAnyFunctionFlags(FUNC_BlueprintCallable))
+			{
+				continue;
+			}
+			FString Shown = It->GetName();
+			Shown.RemoveFromStart(TEXT("K2_"));
+			const TArray<FString> Words = NameWords(Shown);
+			bool bAll = true;
+			for (const FString& Word : Wanted)
+			{
+				bAll = bAll && Words.Contains(Word);
+			}
+			if (bAll && Found.Num() < 6)
+			{
+				Found.AddUnique(Shown);
+			}
+		}
+		return Found.Num() > 0
+			? FString::Printf(TEXT(" Functions on %s for it (kind call_function, class %s): %s."), *Owner->GetName(), *Owner->GetName(), *FString::Join(Found, TEXT(", ")))
+			: FString();
+	}
+
+	/**
+	 * A property of another class that a Blueprint may read (or write, when bForWrite). Takes the name with or without the
+	 * bool prefix. Null with OutError saying what is wrong and what to use instead.
+	 */
+	const FProperty* FindBlueprintProperty(const UClass* Owner, const FString& Name, bool bForWrite, FString& OutError)
+	{
+		const FProperty* Property = FindFProperty<FProperty>(Owner, FName(*Name));
+		if (!Property)
+		{
+			Property = FindFProperty<FProperty>(Owner, FName(*(TEXT("b") + Name)));
+		}
+		if (!Property)
+		{
+			const TArray<FString> Wanted = NameWords(Name);
+			TArray<TPair<int32, FString>> Scored;
+			for (TFieldIterator<FProperty> It(Owner, EFieldIteratorFlags::IncludeSuper); It; ++It)
+			{
+				if (!It->HasAnyPropertyFlags(CPF_BlueprintVisible))
+				{
+					continue;
+				}
+				const TArray<FString> Words = NameWords(It->GetName());
+				int32 Shared = 0;
+				for (const FString& Word : Wanted)
+				{
+					Shared += Words.Contains(Word) ? 1 : 0;
+				}
+				if (Shared > 0)
+				{
+					Scored.Emplace(Shared * 100 - Words.Num(), It->GetName());
+				}
+			}
+			Scored.Sort([](const TPair<int32, FString>& A, const TPair<int32, FString>& B) { return A.Key > B.Key || (A.Key == B.Key && A.Value < B.Value); });
+			TArray<FString> Similar;
+			for (int32 i = 0; i < Scored.Num() && Similar.Num() < 8; ++i)
+			{
+				Similar.Add(Scored[i].Value);
+			}
+			OutError = FString::Printf(TEXT("%s has no property '%s'.%s%s"), *Owner->GetName(), *Name,
+				Similar.Num() > 0 ? *(TEXT(" Similar properties Blueprints can use: ") + FString::Join(Similar, TEXT(", ")) + TEXT(".")) : TEXT(""),
+				*AccessorHint(Owner, Name));
+			return nullptr;
+		}
+		if (!Property->HasAnyPropertyFlags(CPF_BlueprintVisible))
+		{
+			OutError = FString::Printf(TEXT("%s.%s is not exposed to Blueprint graphs, so no node can read or write it.%s "
+				"Its default can still be set with object_set_properties."), *Owner->GetName(), *Property->GetName(), *AccessorHint(Owner, Property->GetName()));
+			return nullptr;
+		}
+		if (bForWrite && Property->HasAnyPropertyFlags(CPF_BlueprintReadOnly))
+		{
+			OutError = FString::Printf(TEXT("%s.%s can be read in a Blueprint graph but not written.%s"), *Owner->GetName(), *Property->GetName(), *AccessorHint(Owner, Property->GetName()));
+			return nullptr;
+		}
+		return Property;
+	}
+
+	/** The engine's standard macro library: ForEachLoop, ForLoop, WhileLoop, DoOnce, Gate, FlipFlop, IsValid and friends. */
+	UEdGraph* FindStandardMacro(const FString& Name, FString& OutError)
+	{
+		const UBlueprint* Library = LoadObject<UBlueprint>(nullptr, TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros"));
+		if (!Library)
+		{
+			OutError = TEXT("The engine's standard macro library could not be loaded.");
+			return nullptr;
+		}
+		const FString Wanted = Squash(Name);
+		TArray<FString> Names;
+		for (UEdGraph* Graph : Library->MacroGraphs)
+		{
+			if (Graph && Squash(Graph->GetName()) == Wanted)
+			{
+				return Graph;
+			}
+			if (Graph)
+			{
+				Names.Add(Graph->GetName());
+			}
+		}
+		OutError = FString::Printf(TEXT("No standard macro named '%s'. Available: %s"), *Name, *FString::Join(Names, TEXT(", ")));
 		return nullptr;
 	}
 
@@ -707,17 +983,23 @@ void CursorToolPacks::RegisterBlueprintPack()
 	FCursorToolBuilder(TEXT("blueprint_add_node"), BlueprintPack)
 		.Describe(TEXT("Add one common node to a graph and return it with its pins. Kinds: "
 			"event (override a parent event such as BeginPlay or Tick; event graph only), custom_event (event graph only), "
+			"input_key (a key or button event with Pressed and Released outputs: set 'key'; event graph of an actor only), "
 			"call_function (any BlueprintCallable function: set 'function' and optionally 'class', default the parent class; static library functions such as KismetSystemLibrary.PrintString work), "
-			"variable_get / variable_set (a member variable by 'name'), branch, sequence, self. "
+			"variable_get / variable_set (a member variable or component by 'name'; add 'class' to read or write a property of another object, "
+			"for example name MaxWalkSpeed, class CharacterMovementComponent: the node then has a Target pin to wire that object into), "
+			"cast (to 'class'; outputs the object as that class, or runs Cast Failed), "
+			"macro (a standard macro by 'name': ForEachLoop, ForLoop, WhileLoop, DoOnce, Gate, FlipFlop, IsValid...), branch, sequence, self. "
 			"Then wire it with blueprint_connect_pins and fill pin values with blueprint_set_pin_default."))
 		.Risk(ECursorToolRisk::Mutating)
 		.Schema(FCursorSchema()
 			.Str(TEXT("blueprint"), TEXT("Blueprint asset path."), true)
-			.Enum(TEXT("kind"), TEXT("What to add."), { TEXT("event"), TEXT("custom_event"), TEXT("call_function"), TEXT("variable_get"), TEXT("variable_set"), TEXT("branch"), TEXT("sequence"), TEXT("self") }, true)
+			.Enum(TEXT("kind"), TEXT("What to add."), { TEXT("event"), TEXT("custom_event"), TEXT("input_key"), TEXT("call_function"), TEXT("variable_get"), TEXT("variable_set"), TEXT("cast"), TEXT("macro"), TEXT("branch"), TEXT("sequence"), TEXT("self") }, true)
 			.Str(TEXT("graph"), TEXT("Graph name. Default: the main event graph."))
-			.Str(TEXT("name"), TEXT("event: parent event name (BeginPlay, Tick, ActorBeginOverlap; 'Receive' is added when needed). custom_event: its name. variable_get/set: the variable."))
+			.Str(TEXT("name"), TEXT("event: parent event name (BeginPlay, Tick, ActorBeginOverlap; 'Receive' is added when needed). custom_event: its name. variable_get/set: the variable or property. macro: the macro."))
 			.Str(TEXT("function"), TEXT("call_function: function name, for example PrintString or SetActorLocation."))
-			.Str(TEXT("class"), TEXT("call_function: class that owns the function, for example KismetSystemLibrary. Default: the Blueprint's parent class."))
+			.Str(TEXT("class"), TEXT("call_function: class that owns the function, for example KismetSystemLibrary. Default: the Blueprint's parent class. "
+				"variable_get/set: class that owns the property, when it is on another object. cast: the class to cast to (a native name or a Blueprint asset path)."))
+			.Str(TEXT("key"), TEXT("input_key: the key or button as plain text, for example LeftShift, SpaceBar, E, LeftMouseButton, Gamepad_FaceButton_Bottom."))
 			.Int(TEXT("x"), TEXT("Node X position in the graph."))
 			.Int(TEXT("y"), TEXT("Node Y position in the graph.")))
 		.Run([](const FCursorArgs& Args, const FCursorToolContext&)
@@ -815,7 +1097,17 @@ void CursorToolPacks::RegisterBlueprintPack()
 				}
 				if (!Function || !Function->HasAnyFunctionFlags(FUNC_BlueprintCallable))
 				{
-					return FCursorToolResult::Error(FString::Printf(TEXT("%s has no Blueprint-callable function '%s'."), *Owner->GetName(), *FunctionName));
+					return FCursorToolResult::Error(DescribeMissingFunction(Owner, FunctionName));
+				}
+				// These read an axis the Blueprint editor binds through its own "Get <axis>" node. As a plain call there is
+				// no binding and the name pin is hidden, so the node would compile and return 0 for ever.
+				static const FName AxisReaders[] = { TEXT("GetInputAxisValue"), TEXT("GetInputAxisKeyValue"), TEXT("GetInputVectorAxisValue") };
+				if (Function->GetOwnerClass() == AActor::StaticClass() && Algo::Find(AxisReaders, Function->GetFName()))
+				{
+					return FCursorToolResult::Error(FString::Printf(TEXT("%s only works through the Blueprint editor's own input-axis node, which binds the axis when the Blueprint compiles; "
+						"added as a plain call it always returns 0. Read input from the player controller instead: PlayerController.IsInputKeyDown (held), "
+						"WasInputKeyJustPressed, or GetInputAnalogKeyState for sticks and the mouse (Gamepad_LeftX, MouseX), with the key name set on the Key pin. "
+						"From a pawn, get the controller with GameplayStatics.GetPlayerController."), *FunctionName));
 				}
 				FGraphNodeCreator<UK2Node_CallFunction> Creator(*Graph);
 				UK2Node_CallFunction* Node = Creator.CreateNode();
@@ -830,17 +1122,59 @@ void CursorToolPacks::RegisterBlueprintPack()
 				{
 					return FCursorToolResult::Error(TEXT("'name' is required: the member variable to read or write."));
 				}
-				const bool bKnown = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, FName(*Name)) != INDEX_NONE
-					|| (Blueprint->SkeletonGeneratedClass && FindFProperty<FProperty>(Blueprint->SkeletonGeneratedClass, FName(*Name)));
-				if (!bKnown)
+				// A class that this Blueprint is not: the property lives on another object, reached through the node's Target pin.
+				UClass* Owner = nullptr;
+				if (Args.Has(TEXT("class")))
 				{
-					return FCursorToolResult::Error(FString::Printf(TEXT("No variable '%s' on this Blueprint. Add it with blueprint_add_variable first."), *Name));
+					Owner = CursorToolHelpers::ResolveClass(Args.Str(TEXT("class")), nullptr, Error);
+					if (!Owner)
+					{
+						return FCursorToolResult::Error(Error);
+					}
+					const UClass* Self = Blueprint->SkeletonGeneratedClass ? Blueprint->SkeletonGeneratedClass.Get() : Blueprint->ParentClass.Get();
+					if (Self && Self->IsChildOf(Owner))
+					{
+						Owner = nullptr;
+					}
 				}
-				if (Kind == TEXT("variable_get"))
+				const bool bSet = Kind == TEXT("variable_set");
+				FName MemberName(*Name);
+				if (Owner)
+				{
+					const FProperty* Property = FindBlueprintProperty(Owner, Name, bSet, Error);
+					if (!Property)
+					{
+						return FCursorToolResult::Error(Error);
+					}
+					MemberName = Property->GetFName();
+					Owner = Property->GetOwnerClass();
+				}
+				else
+				{
+					const bool bKnown = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, MemberName) != INDEX_NONE
+						|| (Blueprint->SkeletonGeneratedClass && FindFProperty<FProperty>(Blueprint->SkeletonGeneratedClass, MemberName));
+					if (!bKnown)
+					{
+						return FCursorToolResult::Error(FString::Printf(TEXT("No variable '%s' on this Blueprint. Add it with blueprint_add_variable first, "
+							"or pass 'class' when the property belongs to another object (for example name MaxWalkSpeed, class CharacterMovementComponent)."), *Name));
+					}
+				}
+				auto Point = [&](FMemberReference& Reference)
+				{
+					if (Owner)
+					{
+						Reference.SetExternalMember(MemberName, Owner);
+					}
+					else
+					{
+						Reference.SetSelfMember(MemberName);
+					}
+				};
+				if (!bSet)
 				{
 					FGraphNodeCreator<UK2Node_VariableGet> Creator(*Graph);
 					UK2Node_VariableGet* Node = Creator.CreateNode();
-					Node->VariableReference.SetSelfMember(FName(*Name));
+					Point(Node->VariableReference);
 					PlaceNode(Node, Args, Graph);
 					Creator.Finalize();
 					Created = Node;
@@ -849,11 +1183,94 @@ void CursorToolPacks::RegisterBlueprintPack()
 				{
 					FGraphNodeCreator<UK2Node_VariableSet> Creator(*Graph);
 					UK2Node_VariableSet* Node = Creator.CreateNode();
-					Node->VariableReference.SetSelfMember(FName(*Name));
+					Point(Node->VariableReference);
 					PlaceNode(Node, Args, Graph);
 					Creator.Finalize();
 					Created = Node;
 				}
+			}
+			else if (Kind == TEXT("input_key"))
+			{
+				if (!bEventGraph)
+				{
+					return FCursorToolResult::Error(TEXT("Key events can only be added to an event graph."));
+				}
+				if (!Blueprint->SupportsInputEvents())
+				{
+					return FCursorToolResult::Error(TEXT("Only actor Blueprints can have key events."));
+				}
+				FString KeyName;
+				if (!NormaliseKeyName(Args.Str(TEXT("key")), KeyName, Error))
+				{
+					return FCursorToolResult::Error(Error);
+				}
+				if (KeyName == TEXT("None"))
+				{
+					return FCursorToolResult::Error(TEXT("'key' is required for input_key, for example LeftShift or SpaceBar."));
+				}
+				const FKey Key{ FName(*KeyName) };
+				if (Key.IsAxis1D() || Key.IsAxis2D() || Key.IsAxis3D())
+				{
+					return FCursorToolResult::Error(FString::Printf(TEXT("%s is an axis, not a button: it has a value, not a press. Read it every Tick with PlayerController.GetInputAnalogKeyState."), *KeyName));
+				}
+				// One node per key: a second one for the same key would never fire, because the first consumes the press.
+				for (UEdGraph* Page : Blueprint->UbergraphPages)
+				{
+					for (UEdGraphNode* Existing : Page->Nodes)
+					{
+						UK2Node_InputKey* KeyNode = Cast<UK2Node_InputKey>(Existing);
+						if (KeyNode && KeyNode->InputKey == Key)
+						{
+							Created = KeyNode;
+							bAlreadyExisted = true;
+						}
+					}
+				}
+				if (!Created)
+				{
+					FGraphNodeCreator<UK2Node_InputKey> Creator(*Graph);
+					UK2Node_InputKey* Node = Creator.CreateNode();
+					Node->InputKey = Key;
+					PlaceNode(Node, Args, Graph);
+					Creator.Finalize();
+					Created = Node;
+				}
+			}
+			else if (Kind == TEXT("cast"))
+			{
+				if (!Args.Has(TEXT("class")))
+				{
+					return FCursorToolResult::Error(TEXT("'class' is required for cast: the class to cast to, for example Character or /Game/Blueprints/BP_Player."));
+				}
+				UClass* Target = CursorToolHelpers::ResolveClass(Args.Str(TEXT("class")), nullptr, Error);
+				if (!Target)
+				{
+					return FCursorToolResult::Error(Error);
+				}
+				FGraphNodeCreator<UK2Node_DynamicCast> Creator(*Graph);
+				UK2Node_DynamicCast* Node = Creator.CreateNode();
+				Node->TargetType = Target;
+				PlaceNode(Node, Args, Graph);
+				Creator.Finalize();
+				Created = Node;
+			}
+			else if (Kind == TEXT("macro"))
+			{
+				if (Name.IsEmpty())
+				{
+					return FCursorToolResult::Error(TEXT("'name' is required for macro, for example ForEachLoop."));
+				}
+				UEdGraph* Macro = FindStandardMacro(Name, Error);
+				if (!Macro)
+				{
+					return FCursorToolResult::Error(Error);
+				}
+				FGraphNodeCreator<UK2Node_MacroInstance> Creator(*Graph);
+				UK2Node_MacroInstance* Node = Creator.CreateNode();
+				Node->SetMacroGraph(Macro);
+				PlaceNode(Node, Args, Graph);
+				Creator.Finalize();
+				Created = Node;
 			}
 			else if (Kind == TEXT("branch"))
 			{
@@ -971,7 +1388,8 @@ void CursorToolPacks::RegisterBlueprintPack()
 
 	FCursorToolBuilder(TEXT("blueprint_set_pin_default"), BlueprintPack)
 		.Describe(TEXT("Set the literal value of an unconnected input pin: text for PrintString's InString, 1.5 for a float, true for a bool, "
-			"(X=1,Y=2,Z=3) for a vector, an asset path for an object pin."))
+			"(X=1,Y=2,Z=3) for a vector, an asset path for an object pin, a plain key name for a Key pin (SpaceBar, D, Gamepad_LeftX). "
+			"The result shows the value as stored; a value the pin's type cannot read is an error, not a silent blank."))
 		.Risk(ECursorToolRisk::Mutating)
 		.Schema(FCursorSchema()
 			.Str(TEXT("blueprint"), TEXT("Blueprint asset path."), true)
@@ -1023,12 +1441,50 @@ void CursorToolPacks::RegisterBlueprintPack()
 			}
 			else
 			{
-				const FString Problem = Schema->IsPinDefaultValid(Pin, Value, nullptr, FText::GetEmpty());
+				FString Text = Value;
+				const UScriptStruct* Struct = Category == UEdGraphSchema_K2::PC_Struct && !Pin->PinType.IsContainer() ? Cast<UScriptStruct>(Pin->PinType.PinSubCategoryObject.Get()) : nullptr;
+				if (Struct == FKey::StaticStruct())
+				{
+					if (!NormaliseKeyName(Value, Text, Error))
+					{
+						return FCursorToolResult::Error(Error);
+					}
+				}
+				else if ((Struct == TBaseStructure<FVector>::Get() || Struct == TVariantStructure<FVector3f>::Get()) && Value.Contains(TEXT("=")))
+				{
+					// Vector and rotator pins store bare numbers ("1,2,3"). Take the (X=1,Y=2,Z=3) spelling used everywhere else too.
+					FVector Vector = FVector::ZeroVector;
+					if (Vector.InitFromString(Value))
+					{
+						Text = FString::Printf(TEXT("%f,%f,%f"), Vector.X, Vector.Y, Vector.Z);
+					}
+				}
+				else if (Struct == TBaseStructure<FRotator>::Get() && Value.Contains(TEXT("=")))
+				{
+					FRotator Rotator = FRotator::ZeroRotator;
+					const bool bPitch = FParse::Value(*Value, TEXT("Pitch="), Rotator.Pitch);
+					const bool bYaw = FParse::Value(*Value, TEXT("Yaw="), Rotator.Yaw);
+					const bool bRoll = FParse::Value(*Value, TEXT("Roll="), Rotator.Roll);
+					if (bPitch || bYaw || bRoll || Rotator.InitFromString(Value))
+					{
+						Text = FString::Printf(TEXT("%f,%f,%f"), Rotator.Pitch, Rotator.Yaw, Rotator.Roll);
+					}
+				}
+				else if (Struct && Struct != TBaseStructure<FVector>::Get() && Struct != TVariantStructure<FVector3f>::Get() && Struct != TBaseStructure<FRotator>::Get()
+					&& Struct != TBaseStructure<FTransform>::Get() && Struct != TBaseStructure<FLinearColor>::Get())
+				{
+					// The schema checks those five itself, in its own formats; every other struct it accepts unread.
+					if (!CheckStructPinText(Struct, Value, Error))
+					{
+						return FCursorToolResult::Error(Error);
+					}
+				}
+				const FString Problem = Schema->IsPinDefaultValid(Pin, Text, nullptr, FText::GetEmpty());
 				if (!Problem.IsEmpty())
 				{
 					return FCursorToolResult::Error(FString::Printf(TEXT("'%s' is not a valid value for a %s pin: %s"), *Value, *PinTypeToString(Pin->PinType), *Problem));
 				}
-				Schema->TrySetDefaultValue(*Pin, Value);
+				Schema->TrySetDefaultValue(*Pin, Text);
 			}
 			FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 			return FCursorToolResult::Ok(FString::Printf(TEXT("Set %s.%s to '%s'."), *Node->GetName(), *Pin->PinName.ToString(), *Pin->GetDefaultAsString()));

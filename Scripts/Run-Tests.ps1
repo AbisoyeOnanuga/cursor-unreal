@@ -5,11 +5,18 @@
 .EXAMPLE
     ./Scripts/Run-Tests.ps1                       # everything under CursorUnreal
     ./Scripts/Run-Tests.ps1 -Filter CursorUnreal.Core
+    ./Scripts/Run-Tests.ps1 -Filter CursorUnreal.Tools.Screenshot -Rendering
+
+.PARAMETER Rendering
+    Starts the editor with a renderer (off screen, no window) instead of without one. Needs a graphics card and
+    takes longer to start. The tests that take pictures of the level only do so in this mode, and they keep the
+    pictures under Saved/CursorUnreal/TestShots so you can look at them.
 #>
 [CmdletBinding()]
 param(
     [string]$Filter = "CursorUnreal",
     [string]$EngineRoot = "",
+    [switch]$Rendering,
     [int]$TimeoutSeconds = 900
 )
 
@@ -31,9 +38,10 @@ Remove-Item $Log -ErrorAction SilentlyContinue
 $EditorArgs = @(
     "`"$Project`"",
     "-ExecCmds=`"Automation RunTests $Filter; Quit`"",
-    "-unattended", "-nullrhi", "-nosplash", "-nopause", "-nosound",
+    "-unattended", "-nosplash", "-nopause", "-nosound",
     "-abslog=`"$Log`""
 )
+if ($Rendering) { $EditorArgs += @("-RenderOffscreen", "-CursorUnrealKeepShots") } else { $EditorArgs += "-nullrhi" }
 $Process = Start-Process -FilePath $Editor -ArgumentList $EditorArgs -PassThru -WindowStyle Hidden
 if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
     $Process.Kill()
@@ -57,5 +65,7 @@ if ($Failed -gt 0 -or $Results.Count -eq 0) {
 }
 
 Write-Host "$Passed passed, $Failed failed. Log: $Log"
+$Shots = Join-Path $RepoRoot "Saved\CursorUnreal\TestShots"
+if ($Rendering -and (Test-Path $Shots)) { Write-Host "Pictures taken by the tests: $Shots" }
 if ($Results.Count -eq 0) { throw "No tests ran for filter '$Filter'." }
 if ($Failed -gt 0) { exit 1 }

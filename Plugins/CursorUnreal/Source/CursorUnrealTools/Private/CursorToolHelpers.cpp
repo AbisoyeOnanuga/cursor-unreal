@@ -4,9 +4,13 @@
 #include "CursorJson.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/WorldSettings.h"
 #include "JsonObjectConverter.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
@@ -62,6 +66,15 @@ namespace CursorToolHelpers
 				LabelMatches.Num(), *NameOrLabel, *FString::Join(Names, TEXT(", ")));
 			return nullptr;
 		}
+		// The level's settings actor is not in the Outliner and is named differently from level to level
+		// (WorldSettings, WorldSettings1, WorldInfo_0 in older template maps), so it gets a fixed name here.
+		if (NameOrLabel.Equals(TEXT("WorldSettings"), ESearchCase::IgnoreCase))
+		{
+			if (AWorldSettings* Settings = World->GetWorldSettings())
+			{
+				return Settings;
+			}
+		}
 		OutError = FString::Printf(TEXT("No actor named or labelled '%s' in the open level. Use actor_list to see what is there."), *NameOrLabel);
 		return nullptr;
 	}
@@ -76,14 +89,16 @@ namespace CursorToolHelpers
 			Path = Path.Mid(Quote + 1);
 			Path.RemoveFromEnd(TEXT("'"));
 		}
-		int32 Dot = INDEX_NONE;
-		if (Path.FindLastChar(TEXT('.'), Dot))
+		// The package is everything before the first '.' or ':' of the last path segment:
+		// /Game/A/BP.BP_C:Mesh_GEN_VARIABLE and /Game/A/BP.Default__BP_C.Mesh are both in /Game/A/BP.
+		int32 Slash = INDEX_NONE;
+		Path.FindLastChar(TEXT('/'), Slash);
+		for (int32 i = Slash + 1; i < Path.Len(); ++i)
 		{
-			int32 Slash = INDEX_NONE;
-			Path.FindLastChar(TEXT('/'), Slash);
-			if (Dot > Slash)
+			if (Path[i] == TEXT('.') || Path[i] == TEXT(':'))
 			{
-				Path.LeftInline(Dot);
+				Path.LeftInline(i);
+				break;
 			}
 		}
 		return Path;
@@ -188,6 +203,79 @@ namespace CursorToolHelpers
 		return Class;
 	}
 
+	/**
+	 * The defaults of a component on a class, addressed by the component's own name. A component a Blueprint adds
+	 * keeps its defaults in an object called <Name>_GEN_VARIABLE that hangs off the class, not off the class's
+	 * default object, so the natural spellings do not exist as objects:
+	 *   /Game/BP_Door.Default__BP_Door_C.Mesh    /Game/BP_Door.Default__BP_Door_C:Mesh    /Game/BP_Door.BP_Door_C:Mesh
+	 * All three mean /Game/BP_Door.BP_Door_C:Mesh_GEN_VARIABLE. Components inherited from a parent Blueprint are found too.
+	 */
+	UObject* FindComponentTemplate(const FString& Path)
+	{
+		int32 FirstDot = INDEX_NONE;
+		int32 Split = INDEX_NONE;
+		if (!Path.FindChar(TEXT('.'), FirstDot))
+		{
+			return nullptr;
+		}
+		if (!Path.FindLastChar(TEXT(':'), Split))
+		{
+			Path.FindLastChar(TEXT('.'), Split);
+			if (Split == FirstDot)
+			{
+				return nullptr; // "/Game/Folder/Asset.Asset": an asset, not something inside one.
+			}
+		}
+		const FString OwnerPath = Path.Left(Split);
+		const FString Name = Path.Mid(Split + 1);
+		if (Name.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		UObject* Owner = StaticFindObject(UObject::StaticClass(), nullptr, *OwnerPath);
+		if (!Owner)
+		{
+			FString Ignored;
+			if (LoadAsset(ToPackagePath(OwnerPath), Ignored))
+			{
+				Owner = StaticFindObject(UObject::StaticClass(), nullptr, *OwnerPath);
+			}
+		}
+		UClass* Class = Cast<UClass>(Owner);
+		if (!Class && Owner && Owner->HasAnyFlags(RF_ClassDefaultObject))
+		{
+			Class = Owner->GetClass();
+		}
+		if (!Class)
+		{
+			return nullptr;
+		}
+
+		// A component the C++ parent created (CharMoveComp, CollisionCylinder) lives on the default object.
+		if (UObject* Native = StaticFindObjectFast(UObject::StaticClass(), Class->GetDefaultObject(), FName(*Name)))
+		{
+			return Native;
+		}
+		for (const UClass* Current = Class; Current; Current = Current->GetSuperClass())
+		{
+			const UBlueprintGeneratedClass* Generated = Cast<UBlueprintGeneratedClass>(Current);
+			if (!Generated || !Generated->SimpleConstructionScript)
+			{
+				continue;
+			}
+			for (const USCS_Node* Node : Generated->SimpleConstructionScript->GetAllNodes())
+			{
+				if (Node && Node->ComponentTemplate
+					&& (Node->GetVariableName().ToString().Equals(Name, ESearchCase::IgnoreCase) || Node->ComponentTemplate->GetName().Equals(Name, ESearchCase::IgnoreCase)))
+				{
+					return Node->ComponentTemplate;
+				}
+			}
+		}
+		return nullptr;
+	}
+
 	UObject* ResolveObject(const FString& InPath, FString& OutError)
 	{
 		const FString Path = InPath.TrimStartAndEnd();
@@ -206,6 +294,10 @@ namespace CursorToolHelpers
 			if (Existing && !Existing->IsA<UPackage>())
 			{
 				return Existing;
+			}
+			if (UObject* Template = FindComponentTemplate(Path))
+			{
+				return Template;
 			}
 			return LoadAsset(Path, OutError);
 		}
@@ -647,6 +739,30 @@ namespace CursorToolHelpers
 			if (i + 1 < Segments.Num())
 			{
 				const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+				if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+				{
+					// Something this object owns and shows in its own Details panel (a brush's builder, an actor's
+					// component) is edited through it there; follow the reference the same way. Anything it merely
+					// points at (a mesh, another actor) has to be addressed as itself, so an edit never lands on a
+					// shared asset by accident.
+					UObject* Inner = ObjectProperty->GetObjectPropertyValue(Property->ContainerPtrToValuePtr<void>(Container));
+					TArray<FString> Rest;
+					for (int32 j = i + 1; j < Segments.Num(); ++j)
+					{
+						Rest.Add(Segments[j]);
+					}
+					if (!Inner)
+					{
+						OutError = FString::Printf(TEXT("'%s' is empty on this object, so '%s' cannot be reached through it."), *Segments[i], *Segments[i + 1]);
+						return false;
+					}
+					if (!Inner->IsIn(Object) || !Chain[0]->HasAnyPropertyFlags(CPF_Edit))
+					{
+						OutError = FString::Printf(TEXT("'%s' refers to another object. Set '%s' on that object itself: %s"), *Segments[i], *FString::Join(Rest, TEXT(".")), *Inner->GetPathName());
+						return false;
+					}
+					return WriteProperty(Inner, FString::Join(Rest, TEXT(".")), Value, OutError);
+				}
 				if (!StructProperty)
 				{
 					OutError = FString::Printf(TEXT("'%s' is not a struct, so '%s' cannot be reached through it. To change a component's property, address the component (Actor.Component)."),

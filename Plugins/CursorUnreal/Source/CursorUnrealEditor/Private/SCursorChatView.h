@@ -5,6 +5,7 @@
 #include "CursorMarkdown.h"
 #include "Widgets/SCompoundWidget.h"
 
+class SCursorImageStrip;
 class SMultiLineEditableText;
 class SMultiLineEditableTextBox;
 class SScrollBox;
@@ -33,6 +34,9 @@ private:
 
 	TSharedPtr<FAgentItem> Item;
 	bool bExpanded = false;
+
+	/** Pictures sent with a message, or returned by a tool. Always in view, whether or not the card is open. */
+	TSharedPtr<SCursorImageStrip> ImageStrip;
 
 	// Messages, notices and errors.
 	TSharedPtr<SMultiLineEditableText> PlainText;
@@ -67,6 +71,17 @@ public:
 	int32 NumItemWidgets() const { return ItemWidgets.Num(); }
 	void SetAllExpanded(bool bExpanded);
 
+	/** Attaches pictures to the message being written. Returns how many were taken; the rest did not fit, and the status line says why. */
+	int32 AttachImages(const TArray<FCursorImage>& Images);
+	/** Reads picture files and attaches them. Files that are not pictures are named in the status line. */
+	int32 AttachFiles(const TArray<FString>& Files);
+	int32 NumAttachedImages() const { return PendingImages.Num(); }
+	/** What Enter and the Send button do. */
+	void Send();
+
+	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+
 private:
 	void BindSession();
 	void UnbindSession();
@@ -79,8 +94,11 @@ private:
 	void HandleStateChanged();
 	void HandleUserScrolled(float Offset);
 
-	void Send();
 	FReply HandleSendOrStop();
+	FReply HandleAttachClicked();
+	FReply HandleInputKeyDown(const FGeometry& Geometry, const FKeyEvent& KeyEvent);
+	void RemoveAttachedImage(int32 Index);
+	void RefreshAttachedStrip();
 	FReply HandleNewChat();
 	FReply HandleRetry();
 	void HandleInputCommitted(const FText& Text, ETextCommit::Type CommitType);
@@ -103,6 +121,10 @@ private:
 	TSharedPtr<FAgentSession> Session;
 	TSharedPtr<SScrollBox> MessageBox;
 	TSharedPtr<SMultiLineEditableTextBox> Input;
+
+	/** Pictures that will go with the next message. */
+	TArray<FCursorImage> PendingImages;
+	TSharedPtr<SCursorImageStrip> PendingStrip;
 
 	TMap<TSharedPtr<FAgentItem>, TSharedPtr<SCursorChatItem>> ItemWidgets;
 	TSet<TSharedPtr<FAgentItem>> DirtyItems;

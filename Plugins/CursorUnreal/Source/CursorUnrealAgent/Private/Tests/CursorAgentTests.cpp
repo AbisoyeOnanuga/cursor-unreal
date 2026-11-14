@@ -8,7 +8,9 @@
 #include "AnthropicStream.h"
 #include "CursorActivity.h"
 #include "CursorJson.h"
+#include "CursorPerfLog.h"
 #include "CursorTestSupport.h"
+#include "HAL/FileManager.h"
 #include "CursorTool.h"
 #include "CursorToolRegistry.h"
 #include "CursorUnrealSettings.h"
@@ -99,6 +101,8 @@ namespace CursorAgentTests
 		TArray<FAgentEvent> Events;
 		TArray<float> RetryDelays;
 		TArray<FString> ToolOrder;
+		/** Pictures the echo tool returns with its next results, as a screenshot tool would. */
+		TArray<FCursorImage> EchoImages;
 		FString Key = FakeKey;
 
 		FHarness()
@@ -126,9 +130,23 @@ namespace CursorAgentTests
 					{
 						return FCursorToolResult::Error(TEXT("asked to fail"));
 					}
-					return FCursorToolResult::Ok(Args.Str(TEXT("text"), TEXT("ok")));
+					FCursorToolResult Result = FCursorToolResult::Ok(Args.Str(TEXT("text"), TEXT("ok")));
+					Result.Images = EchoImages;
+					return Result;
 				})
 				.Register();
+		}
+
+		/** How many picture blocks request Index carries, in user messages and in tool results. */
+		int32 NumImagesSent(int32 RequestIndex) const
+		{
+			const FString Body = Transport->GetRequests().IsValidIndex(RequestIndex) ? Transport->GetRequests()[RequestIndex].Body : FString();
+			int32 Count = 0;
+			for (int32 At = Body.Find(TEXT("\"type\":\"image\"")); At != INDEX_NONE; At = Body.Find(TEXT("\"type\":\"image\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 1))
+			{
+				++Count;
+			}
+			return Count;
 		}
 
 		void Queue(const TCHAR* Fixture, int32 ChunkBytes = 0, int32 Status = 200)
@@ -991,6 +1009,195 @@ bool FCursorAgentCancelTest::RunTest(const FString&)
 		H.Transport->PumpAll();
 		TestEqual(TEXT("the first turn is unaffected"), H.Outcome(), FString(TEXT("done")));
 		TestEqual(TEXT("one request"), H.Transport->GetRequests().Num(), 1);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorAgentImagesTest, "CursorUnreal.Agent.Images", CursorTest::Flags)
+bool FCursorAgentImagesTest::RunTest(const FString&)
+{
+	const FCursorImage Sketch = CursorTest::MakeImage(1, 8, 6, false, TEXT("sketch.png"));
+	const FCursorImage Mood = CursorTest::MakeImage(2, 16, 9, true, TEXT("mood.jpg"));
+	const FCursorImage Shot = CursorTest::MakeImage(3, 32, 18, true, TEXT("viewport (top)"));
+
+	// --- A message with pictures, and a tool that answers with one -----------------------------
+	{
+		FHarness H;
+		H.EchoImages.Add(Shot);
+		H.Queue(TEXT("tool-use.sse"));
+		H.Queue(TEXT("after-tool.sse"));
+
+		FAgentTurnRequest Request;
+		Request.Text = TEXT("Block this out.");
+		Request.Context.Add({ TEXT("Selection"), TEXT("Cube_3") });
+		Request.Images = { Sketch, Mood };
+		H.Backend->SendTurn(Request, H.Sink());
+		H.Transport->PumpAll();
+		TestEqual(TEXT("turn finished"), H.Outcome(), FString(TEXT("done")));
+
+		// context, label, picture, label, picture, the request
+		TestEqual(TEXT("blocks in the user message"), H.NumBlocks(0, 0), 6);
+		TestEqual(TEXT("each picture is introduced"), AgentJson::Str(H.Block(0, 0, 1), TEXT("text")), FString(TEXT("Attached picture 1 of 2 (sketch.png, 8 x 6 pixels):")));
+		TestEqual(TEXT("picture block"), AgentJson::Str(H.Block(0, 0, 2), TEXT("type")), FString(TEXT("image")));
+		const TSharedPtr<FJsonObject> Source = AgentJson::Obj(H.Block(0, 0, 2), TEXT("source"));
+		TestEqual(TEXT("sent as base64"), AgentJson::Str(Source, TEXT("type")), FString(TEXT("base64")));
+		TestEqual(TEXT("with its type"), AgentJson::Str(Source, TEXT("media_type")), FString(TEXT("image/png")));
+		TestEqual(TEXT("and its bytes, unchanged"), AgentJson::Str(Source, TEXT("data")), Sketch.ToBase64());
+		TestEqual(TEXT("second picture's type"), AgentJson::Str(AgentJson::Obj(H.Block(0, 0, 4), TEXT("source")), TEXT("media_type")), FString(TEXT("image/jpeg")));
+		TestEqual(TEXT("the request comes last"), AgentJson::Str(H.Block(0, 0, 5), TEXT("text")), FString(TEXT("Block this out.")));
+
+		// The tool's picture goes back inside its result, after the text.
+		const TSharedPtr<FJsonObject> ResultBlock = H.Block(1, 2, 0);
+		TestEqual(TEXT("tool result"), AgentJson::Str(ResultBlock, TEXT("type")), FString(TEXT("tool_result")));
+		TArray<TSharedPtr<FJsonValue>> Parts;
+		TestTrue(TEXT("its content is a list when there is a picture"), FHarness::CopyArray(ResultBlock, TEXT("content"), Parts) && Parts.Num() == 2);
+		if (Parts.Num() == 2)
+		{
+			TestEqual(TEXT("text first"), AgentJson::Str(FHarness::ObjectAt(Parts, 0), TEXT("text")), FString(TEXT("from the model")));
+			TestEqual(TEXT("then the picture"), AgentJson::Str(FHarness::ObjectAt(Parts, 1), TEXT("type")), FString(TEXT("image")));
+			TestEqual(TEXT("with its bytes"), AgentJson::Str(AgentJson::Obj(FHarness::ObjectAt(Parts, 1), TEXT("source")), TEXT("data")), Shot.ToBase64());
+		}
+		const FAgentEvent* Finished = H.First(EAgentEventType::ToolCallFinished);
+		TestTrue(TEXT("the chat is told which picture the model was shown"), Finished && Finished->Images.Num() == 1 && Finished->Images[0].Hash() == Shot.Hash());
+		TestEqual(TEXT("pictures in the conversation"), H.Backend->NumHistoryImages(), 3);
+		TestEqual(TEXT("the second request carries all three"), H.NumImagesSent(1), 3);
+	}
+
+	// --- What is refused -----------------------------------------------------------------------
+	{
+		FHarness H;
+		FAgentTurnRequest Request;
+		Request.Text = TEXT("Too many.");
+		for (int32 Index = 0; Index <= CursorImages::MaxPerMessage; ++Index)
+		{
+			Request.Images.Add(CursorTest::MakeImage(100 + Index));
+		}
+		H.Backend->SendTurn(Request, H.Sink());
+		TestEqual(TEXT("nine pictures are refused"), H.Outcome(), FString(TEXT("error")));
+		TestTrue(TEXT("with the limit named"), H.Events.Num() == 1 && H.Events[0].Text.Contains(TEXT("at most 8")));
+		TestEqual(TEXT("nothing was added to the conversation"), H.Backend->NumHistoryMessages(), 0);
+		TestEqual(TEXT("nothing was sent"), H.Transport->GetRequests().Num(), 0);
+
+		TestTrue(TEXT("eight are fine"), CursorAgent::CheckMessageImages(TArray<FCursorImage>(Request.Images.GetData(), 8)).IsEmpty());
+		FCursorImage Gif = Sketch;
+		Gif.MimeType = TEXT("image/gif");
+		TestFalse(TEXT("other formats are refused"), CursorAgent::CheckMessageImages({ Gif }).IsEmpty());
+		TestFalse(TEXT("an empty picture is refused"), CursorAgent::CheckMessageImages({ FCursorImage() }).IsEmpty());
+		FCursorImage Huge = Sketch;
+		TArray<uint8> Big;
+		Big.SetNumZeroed(static_cast<int32>(CursorImages::MaxMessageBytes / 2 + 1));
+		Huge.Data = MakeShared<const TArray<uint8>>(MoveTemp(Big));
+		TestTrue(TEXT("too many bytes in total are refused"), CursorAgent::CheckMessageImages({ Huge, Huge }).Contains(TEXT("MB")));
+	}
+
+	// --- Old pictures are dropped so the conversation does not grow without limit ----------------
+	{
+		FHarness H;
+		int32 Seed = 200;
+		for (int32 Turn = 0; Turn < 4; ++Turn)
+		{
+			H.Queue(TEXT("text-only.sse"));
+			FAgentTurnRequest Request;
+			Request.Text = FString::Printf(TEXT("Turn %d."), Turn);
+			Request.Images = { CursorTest::MakeImage(Seed++), CursorTest::MakeImage(Seed++), CursorTest::MakeImage(Seed++) };
+			H.Backend->SendTurn(Request, H.Sink());
+			H.Transport->PumpAll();
+		}
+		TestEqual(TEXT("three turns of three stay under the limit"), H.NumImagesSent(2), 9);
+		TestEqual(TEXT("the fourth turn would make twelve; the newest five are sent"), H.NumImagesSent(3), CursorAgent::KeepImagesInHistory);
+		TestEqual(TEXT("and kept"), H.Backend->NumHistoryImages(), CursorAgent::KeepImagesInHistory);
+		TestTrue(TEXT("the user is told"), H.Joined(EAgentEventType::Notice).Contains(TEXT("7 oldest pictures were dropped")));
+		const FString Last = H.Transport->GetRequests()[3].Body;
+		TestTrue(TEXT("the model is told where a picture used to be"), Last.Contains(TEXT("has been dropped from the conversation")));
+		TestTrue(TEXT("the newest picture is still there"), Last.Contains(CursorTest::MakeImage(Seed - 1).ToBase64()));
+		TestFalse(TEXT("the oldest is gone"), Last.Contains(CursorTest::MakeImage(200).ToBase64()));
+		// The message itself must still alternate and keep its text.
+		TestEqual(TEXT("the first message keeps its blocks"), H.NumBlocks(3, 0), 7);
+		TestEqual(TEXT("and its request"), AgentJson::Str(H.Block(3, 0, 6), TEXT("text")), FString(TEXT("Turn 0.")));
+	}
+
+	// --- A tool cannot flood one turn with pictures ------------------------------------------------
+	{
+		FHarness H;
+		for (int32 Index = 0; Index < CursorAgent::MaxToolImagesPerTurn + 2; ++Index)
+		{
+			H.EchoImages.Add(CursorTest::MakeImage(300 + Index));
+		}
+		H.Queue(TEXT("tool-use.sse"));
+		H.Queue(TEXT("after-tool.sse"));
+		H.Send(TEXT("Many screenshots."));
+		const FAgentEvent* Finished = H.First(EAgentEventType::ToolCallFinished);
+		TestTrue(TEXT("only the turn's allowance is passed on"), Finished && Finished->Images.Num() == CursorAgent::MaxToolImagesPerTurn);
+		TestTrue(TEXT("and the model is told the rest were held back"), Finished && Finished->Text.Contains(TEXT("2 pictures not shown to you")));
+	}
+
+	// --- The chat and the transcript -------------------------------------------------------------
+	{
+		FHarness H;
+		H.EchoImages.Add(Shot);
+		const bool bPerfToDisk = FCursorPerfLog::Get().bWriteToDisk;
+		FCursorPerfLog::Get().bWriteToDisk = false;
+		UCursorUnrealSettings* Settings = UCursorUnrealSettings::GetMutable();
+		const bool bSavedTranscripts = Settings->bSaveTranscripts;
+		Settings->bSaveTranscripts = true;
+
+		const TSharedRef<FAgentSession> Session = MakeShared<FAgentSession>(H.Backend.ToSharedRef());
+		FText Why;
+		FAgentTurnRequest Request;
+		Request.Images = { Sketch };
+		H.Queue(TEXT("tool-use.sse"));
+		H.Queue(TEXT("after-tool.sse"));
+		TestTrue(TEXT("a picture can be sent without words"), Session->Send(Request, Why));
+		H.Transport->PumpAll();
+
+		const TArray<TSharedRef<FAgentItem>>& Items = Session->GetItems();
+		TArray<FString> Created;
+		if (Items.Num() == 5)
+		{
+			TestEqual(TEXT("words are supplied for it"), Items[0]->Text, FString(TEXT("Look at the attached picture.")));
+			TestTrue(TEXT("the message shows its picture"), Items[0]->Images.Num() == 1 && Items[0]->Images[0].Image.Hash() == Sketch.Hash());
+			TestTrue(TEXT("the tool call shows the picture it returned"), Items[3]->Images.Num() == 1 && Items[3]->Images[0].Image.Hash() == Shot.Hash());
+			for (const int32 Index : { 0, 3 })
+			{
+				const FString File = Items[Index]->Images.Num() == 1 ? Items[Index]->Images[0].File : FString();
+				TestTrue(TEXT("a copy is kept in the attachment folder"), File.StartsWith(CursorImages::GetAttachmentDirectory()) && FPaths::FileExists(File));
+				Created.Add(File);
+			}
+		}
+		else
+		{
+			AddError(FString::Printf(TEXT("expected 5 chat items, found %d"), Items.Num()));
+		}
+
+		const FString TranscriptFile = Session->GetTranscriptFile();
+		FString Transcript;
+		TestTrue(TEXT("transcript written"), FFileHelper::LoadFileToString(Transcript, *TranscriptFile));
+		TestTrue(TEXT("it records which pictures went with the message"), Transcript.Contains(Sketch.Hash()) && Transcript.Contains(TEXT("\"name\":\"sketch.png\"")));
+		TestTrue(TEXT("and which the tool returned"), Transcript.Contains(Shot.Hash()));
+		TestTrue(TEXT("by file name, not by path"), Transcript.Contains(FPaths::GetCleanFilename(Created.Num() > 0 ? Created[0] : FString(TEXT("?")))) && !Transcript.Contains(TEXT("Attachments/")));
+		TestFalse(TEXT("the pictures themselves are not in the transcript"), Transcript.Contains(Sketch.ToBase64().Left(32)) || Transcript.Contains(Shot.ToBase64().Left(32)));
+
+		// With saving switched off, nothing is written: the picture exists only in memory.
+		Settings->bSaveTranscripts = false;
+		Session->NewChat();
+		H.EchoImages.Reset();
+		H.Queue(TEXT("text-only.sse"));
+		FAgentTurnRequest Private;
+		Private.Text = TEXT("Private.");
+		Private.Images = { CursorTest::MakeImage(999, 10, 10) };
+		TestTrue(TEXT("sent"), Session->Send(Private, Why));
+		H.Transport->PumpAll();
+		TestTrue(TEXT("still shown in the chat"), Session->GetItems().Num() > 0 && Session->GetItems()[0]->Images.Num() == 1);
+		TestTrue(TEXT("but not saved"), Session->GetItems().Num() > 0 && Session->GetItems()[0]->Images.Num() == 1 && Session->GetItems()[0]->Images[0].File.IsEmpty());
+		TestFalse(TEXT("no file for it"), FPaths::FileExists(CursorImages::GetAttachmentDirectory() / CursorTest::MakeImage(999, 10, 10).Hash().Left(20) + TEXT(".png")));
+
+		Settings->bSaveTranscripts = bSavedTranscripts;
+		FCursorPerfLog::Get().bWriteToDisk = bPerfToDisk;
+		IFileManager::Get().Delete(*TranscriptFile, false, true);
+		for (const FString& File : Created)
+		{
+			IFileManager::Get().Delete(*File, false, true);
+		}
 	}
 	return true;
 }

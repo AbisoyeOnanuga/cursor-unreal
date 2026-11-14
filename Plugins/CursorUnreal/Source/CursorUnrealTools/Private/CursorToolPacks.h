@@ -36,4 +36,12 @@ namespace CursorToolPacks
 	/** "optimisation": read-only mesh/actor cost estimates and LOD suggestions. */
 	void RegisterOptimisationPack();
 	void UnregisterOptimisationPack();
+
+	/** "play": play_test, which plays the open level to a script of key presses and reports what the player's pawn did. */
+	void RegisterPlayPack();
+	void UnregisterPlayPack();
+
+	/** "view": viewport_screenshot, which renders the level from a chosen camera and hands the picture to the model. */
+	void RegisterViewPack();
+	void UnregisterViewPack();
 }

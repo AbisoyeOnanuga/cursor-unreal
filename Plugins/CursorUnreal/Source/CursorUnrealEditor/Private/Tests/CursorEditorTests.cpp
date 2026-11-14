@@ -144,6 +144,39 @@ bool FCursorEditorPanelTest::RunTest(const FString&)
 			Chat->FlushPending();
 			TestEqual(TEXT("second turn ended normally"), Session->GetLastTurn().Outcome, FString(TEXT("done")));
 			TestEqual(TEXT("second turn drew its items"), Chat->NumItemWidgets(), 6);
+
+			// Pictures: attached to the message being written, sent with it, shown with it.
+			Session->NewChat();
+			Chat->FlushPending();
+			TArray<FCursorImage> Pictures;
+			for (int32 Index = 0; Index < CursorImages::MaxPerMessage + 1; ++Index)
+			{
+				Pictures.Add(CursorTest::MakeImage(60 + Index, 24, 16));
+			}
+			TestEqual(TEXT("the same picture is attached once"), Chat->AttachImages({ Pictures[0], Pictures[0] }), 1);
+			TestEqual(TEXT("a file that is not a picture is not attached"), Chat->AttachFiles({ FPaths::ProjectDir() / TEXT("CursorUnrealDev.uproject") }), 0);
+			TestEqual(TEXT("a message takes eight pictures and no more"), Chat->AttachImages(Pictures), CursorImages::MaxPerMessage - 1);
+			TestEqual(TEXT("waiting to be sent"), Chat->NumAttachedImages(), CursorImages::MaxPerMessage);
+			Panel->SlatePrepass(1.0f);
+
+			Chat->Send();
+			TestEqual(TEXT("sending takes the pictures with it"), Chat->NumAttachedImages(), 0);
+			Transport->PumpAll();
+			Chat->FlushPending();
+			TestFalse(TEXT("the turn with pictures ends"), Session->IsBusy());
+			TestEqual(TEXT("and ends normally"), Session->GetLastTurn().Outcome, FString(TEXT("done")));
+			if (Session->GetItems().Num() > 0)
+			{
+				const FAgentItem& Sent = Session->GetItems()[0].Get();
+				TestTrue(TEXT("the message carries the pictures"), Sent.Kind == EAgentItemKind::User && Sent.Images.Num() == CursorImages::MaxPerMessage);
+				TestTrue(TEXT("in memory only, since this test session does not write to disk"), Sent.Images.Num() > 0 && Sent.Images[0].File.IsEmpty());
+				TestEqual(TEXT("words are supplied when only pictures are sent"), Sent.Text, FString(TEXT("Look at the attached pictures.")));
+			}
+			else
+			{
+				AddError(TEXT("the message with pictures did not reach the chat"));
+			}
+			Panel->SlatePrepass(1.0f);
 		}
 		FCursorEditorState::Get().UseSession(nullptr);
 	}

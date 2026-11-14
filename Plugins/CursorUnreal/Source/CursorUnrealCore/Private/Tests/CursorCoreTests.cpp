@@ -13,11 +13,15 @@
 #include "CursorUnrealLog.h"
 #include "CursorUnrealSettings.h"
 #include "HAL/FileManager.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "ImageCore.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 
 namespace CursorCoreTests
 {
@@ -241,6 +245,54 @@ bool FCursorBatchTest::RunTest(const FString&)
 	RunBatch(TEXT("{\"calls\":[]}"));
 	TestTrue(TEXT("empty batch refused"), Last.bIsError);
 
+	// Later calls can use what earlier ones returned.
+	FCursorToolBuilder(TEXT("__make"), TestPack)
+		.Run([](const FCursorArgs&, const FCursorToolContext&)
+		{
+			return FCursorToolResult::OkJson(Json(TEXT("{\"id\":\"Node_7\",\"count\":3,\"pins\":[{\"name\":\"execute\"},{\"name\":\"then\"}]}")).ToSharedRef());
+		})
+		.Register();
+	auto ResultOf = [&](int32 Index) { return Last.Structured->GetArrayField(TEXT("results"))[Index]->AsObject()->GetStringField(TEXT("result")); };
+
+	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__make\",\"as\":\"first\"},")
+		TEXT("{\"tool\":\"__a\",\"args\":{\"text\":\"$first.id\"}},")
+		TEXT("{\"tool\":\"__a\",\"args\":{\"text\":\"$0.pins.1.name\"}},")
+		TEXT("{\"tool\":\"__a\",\"args\":{\"text\":\"${first.id}.${first.pins.0.name} x${first.count}\"}},")
+		TEXT("{\"tool\":\"__a\",\"args\":{\"text\":\"$$first.id\"}},")
+		TEXT("{\"tool\":\"__a\",\"args\":{\"text\":\"$100 and ${HOME}\"}},")
+		TEXT("{\"tool\":\"__a\",\"args\":{\"text\":\"$99\"}}]}"));
+	TestFalse(TEXT("batch with references succeeds: ") + Last.Text, Last.bIsError);
+	TestEqual(TEXT("a named result's field is passed on"), ResultOf(1), FString(TEXT("Node_7")));
+	TestEqual(TEXT("a result can be named by position and reached into"), ResultOf(2), FString(TEXT("then")));
+	TestEqual(TEXT("references inside longer text"), ResultOf(3), FString(TEXT("Node_7.execute x3")));
+	TestEqual(TEXT("a doubled dollar is a literal one"), ResultOf(4), FString(TEXT("$first.id")));
+	TestEqual(TEXT("text that names no call is left alone"), ResultOf(5), FString(TEXT("$100 and ${HOME}")));
+	TestEqual(TEXT("a number past the end of the batch is text"), ResultOf(6), FString(TEXT("$99")));
+	TestEqual(TEXT("the name is reported back"), Last.Structured->GetArrayField(TEXT("results"))[0]->AsObject()->GetStringField(TEXT("as")), FString(TEXT("first")));
+
+	Order.Reset();
+	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__make\",\"as\":\"first\"},{\"tool\":\"__a\",\"args\":{\"text\":\"$first.guid\"}},{\"tool\":\"__b\"}]}"));
+	TestTrue(TEXT("a field the result does not have is an error"), Last.bIsError);
+	TestTrue(TEXT("the error lists the fields that exist: ") + ResultOf(1), ResultOf(1).Contains(TEXT("no 'guid'")) && ResultOf(1).Contains(TEXT("id, count, pins")));
+	TestEqual(TEXT("the call with the bad reference never ran, nor the one after"), Order.Num(), 0);
+
+	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__a\",\"args\":{\"text\":\"$later.id\"}},{\"tool\":\"__make\",\"as\":\"later\"}]}"));
+	TestTrue(TEXT("a reference to a later call is an error: ") + ResultOf(0), Last.bIsError && ResultOf(0).Contains(TEXT("runs later")));
+	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__a\",\"args\":{\"text\":\"hello\"},\"as\":\"plain\"},{\"tool\":\"__a\",\"args\":{\"text\":\"$plain.id\"}},{\"tool\":\"__a\",\"args\":{\"text\":\"$plain\"}}]}"));
+	TestTrue(TEXT("a field of a plain-text result is an error: ") + ResultOf(1), Last.bIsError && ResultOf(1).Contains(TEXT("plain text")));
+	RunBatch(TEXT("{\"stop_on_error\":false,\"calls\":[{\"tool\":\"__a\",\"args\":{\"fail\":true},\"as\":\"bad\"},{\"tool\":\"__a\",\"args\":{\"text\":\"$bad.id\"}},{\"tool\":\"__a\",\"args\":{\"text\":\"hello\"},\"as\":\"plain\"},{\"tool\":\"__a\",\"args\":{\"text\":\"$plain\"}}]}"));
+	TestTrue(TEXT("a reference to a failed call is an error: ") + ResultOf(1), ResultOf(1).Contains(TEXT("failed")));
+	TestEqual(TEXT("a whole plain-text result can be passed on"), ResultOf(3), FString(TEXT("hello")));
+	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__a\",\"as\":\"x\"},{\"tool\":\"__b\",\"as\":\"x\"}]}"));
+	TestTrue(TEXT("a name used twice is refused"), Last.bIsError && Last.Text.Contains(TEXT("named 'x'")));
+	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__a\",\"as\":\"1st\"}]}"));
+	TestTrue(TEXT("a name that is not an identifier is refused"), Last.bIsError);
+
+	RunBatch(TEXT("{\"brief\":true,\"stop_on_error\":false,\"calls\":[{\"tool\":\"__make\"},{\"tool\":\"__a\",\"args\":{\"fail\":true}}]}"));
+	const TArray<TSharedPtr<FJsonValue>>& BriefResults = Last.Structured->GetArrayField(TEXT("results"));
+	TestFalse(TEXT("brief leaves out the result of a successful call"), BriefResults[0]->AsObject()->HasField(TEXT("result")));
+	TestTrue(TEXT("brief keeps the result of a failed call"), BriefResults[1]->AsObject()->HasField(TEXT("result")));
+
 	// A dangerous call hidden inside a batch still needs approval, asked once for the group.
 	Order.Reset();
 	RunBatch(TEXT("{\"calls\":[{\"tool\":\"__a\"},{\"tool\":\"__danger\"}]}"));
@@ -274,6 +326,152 @@ bool FCursorBatchTest::RunTest(const FString&)
 	Held(FCursorToolResult::Ok(TEXT("deferred done")));
 	TestTrue(TEXT("batch finishes after the deferred call"), bDone);
 	TestEqual(TEXT("the call after the deferred one ran"), Order.Num(), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorImagesTest, "CursorUnreal.Core.Images", CursorCoreTests::Flags)
+bool FCursorImagesTest::RunTest(const FString&)
+{
+	FString Error;
+
+	// A render-sized picture is shrunk to the limit and sent as a JPEG.
+	{
+		constexpr int32 Width = 2000;
+		constexpr int32 Height = 1000;
+		TArray<FColor> Pixels;
+		Pixels.SetNumUninitialized(Width * Height);
+		for (int32 Y = 0; Y < Height; ++Y)
+		{
+			for (int32 X = 0; X < Width; ++X)
+			{
+				Pixels[Y * Width + X] = FColor(static_cast<uint8>(X * 255 / Width), static_cast<uint8>(Y * 255 / Height), 128, 0);
+			}
+		}
+		FCursorImage Photo;
+		TestTrue(TEXT("pixels become a picture"), CursorImages::FromPixels(Pixels, Width, Height, TEXT("render"), true, Photo, Error));
+		TestEqual(TEXT("a render is a JPEG"), Photo.MimeType, FString(TEXT("image/jpeg")));
+		TestEqual(TEXT("long edge shrunk to the limit"), Photo.Width, CursorImages::MaxLongEdge);
+		TestEqual(TEXT("shape kept"), Photo.Height, CursorImages::MaxLongEdge / 2);
+		TestTrue(TEXT("small enough to send"), Photo.NumBytes() > 0 && Photo.NumBytes() < CursorImages::MaxEncodedBytes);
+		TestEqual(TEXT("a hash is forty hex digits"), Photo.Hash().Len(), 40);
+		TestTrue(TEXT("described for people"), Photo.Describe().StartsWith(TEXT("render, 1568 x 784, ")));
+		TestFalse(TEXT("base64 for sending"), Photo.ToBase64().IsEmpty());
+
+		TArray<uint8> Shown;
+		int32 ShownWidth = 0;
+		int32 ShownHeight = 0;
+		TestTrue(TEXT("decodes for the chat"), CursorImages::DecodeForDisplay(Photo, 256, Shown, ShownWidth, ShownHeight));
+		TestTrue(TEXT("thumbnail size"), ShownWidth == 256 && ShownHeight == 128 && Shown.Num() == 256 * 128 * 4);
+		// The alpha the pixels came with (zero, as a render target gives) must not make the picture invisible.
+		TestEqual(TEXT("opaque"), static_cast<int32>(Shown[3]), 255);
+
+		TestFalse(TEXT("pixel count must match the size"), CursorImages::FromPixels(Pixels, Width, Height + 1, TEXT("bad"), true, Photo, Error));
+	}
+
+	// A small PNG goes through byte for byte; other formats are converted.
+	{
+		const FCursorImage Small = CursorTest::MakeImage(1, 8, 6);
+		TestEqual(TEXT("not a photo: PNG"), Small.MimeType, FString(TEXT("image/png")));
+		FCursorImage Again;
+		TestTrue(TEXT("an encoded PNG is read"), CursorImages::FromEncoded(Small.Data->GetData(), Small.Data->Num(), TEXT("again.png"), Again, Error));
+		TestEqual(TEXT("and passed through untouched"), Again.Hash(), Small.Hash());
+		TestTrue(TEXT("with its size read"), Again.Width == 8 && Again.Height == 6);
+		TestNotEqual(TEXT("different pictures have different hashes"), CursorTest::MakeImage(2).Hash(), Small.Hash());
+
+		FImage Source(5, 3, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+		for (FColor& Pixel : Source.AsBGRA8())
+		{
+			Pixel = FColor(200, 100, 50, 255);
+		}
+		TArray64<uint8> Bmp;
+		IImageWrapperModule& Wrappers = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+		TestTrue(TEXT("test BMP made"), Wrappers.CompressImage(Bmp, EImageFormat::BMP, Source));
+		FCursorImage FromBmp;
+		TestTrue(TEXT("a BMP is read"), CursorImages::FromEncoded(Bmp.GetData(), Bmp.Num(), TEXT("old.bmp"), FromBmp, Error));
+		TestEqual(TEXT("and converted to PNG"), FromBmp.MimeType, FString(TEXT("image/png")));
+		TestTrue(TEXT("same size"), FromBmp.Width == 5 && FromBmp.Height == 3);
+	}
+
+	// A picture copied to the Windows clipboard: a bitmap without a file header, bottom row first, fourth byte unused.
+	{
+		TArray<uint8> Dib;
+		auto Put32 = [&Dib](uint32 Value) { Dib.Append(reinterpret_cast<const uint8*>(&Value), 4); };
+		auto Put16 = [&Dib](uint16 Value) { Dib.Append(reinterpret_cast<const uint8*>(&Value), 2); };
+		Put32(40); Put32(2); Put32(2); Put16(1); Put16(32); Put32(0); Put32(16); Put32(0); Put32(0); Put32(0); Put32(0);
+		// Bottom row: blue, green. Top row: red, white. Bytes are B, G, R, unused.
+		const uint8 Rows[16] = { 255, 0, 0, 0,   0, 255, 0, 0,   0, 0, 255, 0,   255, 255, 255, 0 };
+		Dib.Append(Rows, 16);
+
+		FCursorImage Pasted;
+		TestTrue(FString::Printf(TEXT("a clipboard bitmap is read (%s)"), *Error), CursorImages::FromDib(Dib.GetData(), Dib.Num(), TEXT("pasted picture"), Pasted, Error));
+		TestTrue(TEXT("size"), Pasted.Width == 2 && Pasted.Height == 2);
+		TArray<uint8> Shown;
+		int32 W = 0;
+		int32 H = 0;
+		if (CursorImages::DecodeForDisplay(Pasted, 16, Shown, W, H) && Shown.Num() == 16)
+		{
+			// Top-left pixel, as B, G, R, A.
+			TestTrue(TEXT("top row first: red at the top left"), Shown[0] == 0 && Shown[1] == 0 && Shown[2] == 255);
+			TestEqual(TEXT("the unused byte is not read as transparency"), static_cast<int32>(Shown[3]), 255);
+			TestTrue(TEXT("blue at the bottom left"), Shown[8] == 255 && Shown[9] == 0 && Shown[10] == 0);
+		}
+		else
+		{
+			AddError(TEXT("the pasted picture did not decode"));
+		}
+		Dib.SetNum(30);
+		TestFalse(TEXT("a cut-off bitmap is refused"), CursorImages::FromDib(Dib.GetData(), Dib.Num(), TEXT("pasted picture"), Pasted, Error));
+	}
+
+	// Things that are not pictures.
+	{
+		FCursorImage Out;
+		const char* Text = "This is a text file, not a picture.";
+		TestFalse(TEXT("text is refused"), CursorImages::FromEncoded(Text, FCStringAnsi::Strlen(Text), TEXT("notes.png"), Out, Error));
+		TestTrue(TEXT("and the message names it"), Error.Contains(TEXT("notes.png")) && Error.Contains(TEXT("PNG, JPEG, BMP or TGA")));
+		TestFalse(TEXT("empty is refused"), CursorImages::FromEncoded(nullptr, 0, TEXT("empty.png"), Out, Error));
+		TestFalse(TEXT("a missing file is refused"), CursorImages::FromFile(FPaths::ProjectSavedDir() / TEXT("no-such-picture.png"), Out, Error));
+		TestFalse(TEXT("a file that is not a picture is refused by name"), CursorImages::FromFile(TEXT("C:/model.fbx"), Out, Error));
+		TestTrue(TEXT("file types"), CursorImages::IsImageFile(TEXT("a/b.PNG")) && CursorImages::IsImageFile(TEXT("c.jpeg")) && !CursorImages::IsImageFile(TEXT("d.webp")));
+	}
+
+	// Saved copies are named by what is in them, under Saved, and reading one back gives the same picture.
+	{
+		const FCursorImage Picture = CursorTest::MakeImage(77, 12, 9);
+		const FString File = CursorImages::SaveAttachment(Picture);
+		TestTrue(TEXT("saved"), !File.IsEmpty() && FPaths::FileExists(File));
+		TestTrue(TEXT("under Saved/CursorUnreal/Attachments"), File.StartsWith(CursorImages::GetAttachmentDirectory()) && File.Contains(TEXT("/Saved/")));
+		TestTrue(TEXT("named by hash"), FPaths::GetBaseFilename(File) == Picture.Hash().Left(20) && File.EndsWith(TEXT(".png")));
+		TestEqual(TEXT("saving again gives the same file"), CursorImages::SaveAttachment(Picture), File);
+		FCursorImage Read;
+		TestTrue(TEXT("reads back"), CursorImages::FromFile(File, Read, Error));
+		TestEqual(TEXT("identical"), Read.Hash(), Picture.Hash());
+		IFileManager::Get().Delete(*File, false, true);
+	}
+
+	// A tool can return a picture, and a batch hands on the pictures of its calls.
+	{
+		CursorTest::FScopedPolicy Policy{ FName(TestPack) };
+		FCursorToolBuilder(TEXT("__picture"), TestPack)
+			.Schema(FCursorSchema().Int(TEXT("seed"), TEXT("Which picture.")))
+			.Run([](const FCursorArgs& Args, const FCursorToolContext&)
+			{
+				FCursorToolResult Result = FCursorToolResult::Ok(TEXT("{\"taken\":true}"));
+				Result.Images.Add(CursorTest::MakeImage(Args.Int(TEXT("seed"), 1)));
+				return Result;
+			})
+			.Register();
+
+		const FCursorToolResult One = CursorTest::Call(TEXT("__picture"), TEXT("{\"seed\":5}"));
+		TestTrue(TEXT("the picture comes back with the result"), !One.bIsError && One.Images.Num() == 1 && One.Images[0].Hash() == CursorTest::MakeImage(5).Hash());
+
+		const FCursorToolResult Batch = CursorTest::Call(TEXT("batch"),
+			TEXT("{\"brief\":true,\"calls\":[{\"tool\":\"__picture\",\"args\":{\"seed\":5}},{\"tool\":\"__picture\",\"args\":{\"seed\":6}}]}"));
+		TestTrue(TEXT("a batch hands on both pictures, in order"), !Batch.bIsError && Batch.Images.Num() == 2
+			&& Batch.Images[0].Hash() == CursorTest::MakeImage(5).Hash() && Batch.Images[1].Hash() == CursorTest::MakeImage(6).Hash());
+		TestTrue(TEXT("and says which calls had one"), Batch.Text.Contains(TEXT("\"images\":1")));
+		TestFalse(TEXT("picture bytes are never in the text"), Batch.Text.Contains(CursorTest::MakeImage(5).ToBase64().Left(24)));
+	}
 	return true;
 }
 

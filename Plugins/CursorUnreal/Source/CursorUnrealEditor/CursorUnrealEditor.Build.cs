@@ -17,6 +17,7 @@ public class CursorUnrealEditor : ModuleRules
 		{
 			"ApplicationCore",
 			"ContentBrowser",
+			"DesktopPlatform",
 			"DeveloperSettings",
 			"Engine",
 			"Json",

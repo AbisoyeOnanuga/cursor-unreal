@@ -215,6 +215,53 @@ namespace
 	};
 }
 
+namespace
+{
+	/** Empty when the arguments fit the tool's schema, or when the only problem is one the tool explains better itself. */
+	FString DescribeMisnamedArguments(const ICursorTool& Tool, const FJsonObject& Args)
+	{
+		const TSharedRef<FJsonObject> Schema = Tool.GetInputSchema();
+		const TSharedPtr<FJsonObject>* Properties = nullptr;
+		if (!Schema->TryGetObjectField(TEXT("properties"), Properties) || !Properties || !Properties->IsValid())
+		{
+			return FString();
+		}
+
+		TArray<FString> Required;
+		Schema->TryGetStringArrayField(TEXT("required"), Required);
+
+		TArray<FString> Missing;
+		for (const FString& Name : Required)
+		{
+			if (!Args.HasField(Name))
+			{
+				Missing.Add(Name);
+			}
+		}
+		TArray<FString> Unknown;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Args.Values)
+		{
+			if (!(*Properties)->HasField(Pair.Key))
+			{
+				Unknown.Add(Pair.Key);
+			}
+		}
+		if (Missing.Num() == 0 || Unknown.Num() == 0)
+		{
+			return FString();
+		}
+
+		TArray<FString> Accepted;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Properties)->Values)
+		{
+			Accepted.Add(Required.Contains(Pair.Key) ? Pair.Key + TEXT(" (required)") : Pair.Key);
+		}
+		return FString::Printf(TEXT("%s was called without its required argument%s '%s', and with '%s', which it does not take. Its arguments are: %s."),
+			*Tool.GetName().ToString(), Missing.Num() > 1 ? TEXT("s") : TEXT(""), *FString::Join(Missing, TEXT("', '")),
+			*FString::Join(Unknown, TEXT("', '")), *FString::Join(Accepted, TEXT(", ")));
+	}
+}
+
 void FCursorToolRegistry::Invoke(FName Name, const TSharedPtr<FJsonObject>& InArgs, const FCursorToolContext& Ctx, FCursorToolCompletion OnComplete)
 {
 	check(IsInGameThread());
@@ -271,6 +318,16 @@ void FCursorToolRegistry::Invoke(FName Name, const TSharedPtr<FJsonObject>& InAr
 		Invocation->Finish(
 			FCursorToolResult::Error(FString::Printf(TEXT("Tool '%s' is only available to the in-editor agent. Use your own file tools instead."), *Name.ToString())),
 			ECursorCallStatus::Denied);
+		return;
+	}
+
+	// A required argument that is absent, next to one the tool does not take, is a misnamed argument
+	// ("blueprint" where the tool wants "object"). Each tool would report only the half it knows about
+	// ("Object path is empty"); say both halves, before anyone is asked to approve the call.
+	const FString ArgumentProblem = DescribeMisnamedArguments(*Tool, *Invocation->Args);
+	if (!ArgumentProblem.IsEmpty())
+	{
+		Invocation->Finish(FCursorToolResult::Error(ArgumentProblem), ECursorCallStatus::Failed);
 		return;
 	}
 

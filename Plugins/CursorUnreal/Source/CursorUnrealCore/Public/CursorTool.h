@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CursorImage.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
@@ -34,6 +35,8 @@ struct CURSORUNREALCORE_API FCursorToolResult
 	bool bIsError = false;
 	FString Text;
 	TSharedPtr<FJsonObject> Structured;
+	/** Pictures for the model to look at, such as a screenshot. Sent after the text. */
+	TArray<FCursorImage> Images;
 
 	static FCursorToolResult Ok(const FString& InText);
 	/** Text becomes the compact JSON; Structured keeps the object for callers that can use it. */

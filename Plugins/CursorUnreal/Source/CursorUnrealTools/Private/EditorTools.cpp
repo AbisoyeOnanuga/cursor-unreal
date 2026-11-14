@@ -1,5 +1,8 @@
 #include "CursorToolPacks.h"
 
+#include "BSPOps.h"
+#include "Builders/CubeBuilder.h"
+#include "Components/BrushComponent.h"
 #include "ContentBrowserModule.h"
 #include "CursorJson.h"
 #include "CursorLogCapture.h"
@@ -7,16 +10,20 @@
 #include "CursorToolHelpers.h"
 #include "CursorToolRegistry.h"
 #include "Editor.h"
+#include "Engine/Brush.h"
+#include "Engine/Polys.h"
 #include "Engine/Selection.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Volume.h"
 #include "IContentBrowserSingleton.h"
 #include "IPythonScriptPlugin.h"
 #include "LevelEditorViewport.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
+#include "Model.h"
 #include "PythonScriptTypes.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
@@ -64,6 +71,104 @@ namespace
 		const FVector L = Actor->GetActorLocation();
 		Out->SetStringField(TEXT("location"), FString::Printf(TEXT("%.0f, %.0f, %.0f"), L.X, L.Y, L.Z));
 		return Out;
+	}
+
+	/** True when the brush has a shape: a volume or brush placed without one is an invisible point that blocks and triggers nothing. */
+	bool BrushHasShape(const ABrush* Brush)
+	{
+		return Brush->Brush && Brush->Brush->Polys && Brush->Brush->Polys->Element.Num() > 0;
+	}
+
+	/**
+	 * Gives a brush or volume a box shape of the given size in centimetres, replacing whatever shape it had.
+	 * This is what the editor's own box-volume factory does; plain brushes additionally become additive level geometry.
+	 */
+	bool BuildBoxBrush(ABrush* Brush, const FVector& Size, FString& OutError)
+	{
+		if (Size.X < 1.0 || Size.Y < 1.0 || Size.Z < 1.0)
+		{
+			OutError = FString::Printf(TEXT("'size' must be at least 1 cm on every axis; got [%g, %g, %g]."), Size.X, Size.Y, Size.Z);
+			return false;
+		}
+		if (!Brush->GetBrushComponent())
+		{
+			OutError = FString::Printf(TEXT("%s has no brush component to shape."), *Brush->GetName());
+			return false;
+		}
+
+		Brush->PreEditChange(nullptr);
+		const EObjectFlags ObjectFlags = Brush->GetFlags() & (RF_Transient | RF_Transactional);
+		const bool bVolume = Brush->IsA<AVolume>();
+		if (bVolume)
+		{
+			Brush->PolyFlags = 0;
+		}
+		Brush->Brush = NewObject<UModel>(Brush, NAME_None, ObjectFlags);
+		Brush->Brush->Initialize(nullptr, true);
+		Brush->Brush->Polys = NewObject<UPolys>(Brush->Brush, NAME_None, ObjectFlags);
+		Brush->GetBrushComponent()->Brush = Brush->Brush;
+
+		UCubeBuilder* Builder = NewObject<UCubeBuilder>(Brush, NAME_None, ObjectFlags);
+		Builder->X = Size.X;
+		Builder->Y = Size.Y;
+		Builder->Z = Size.Z;
+		Brush->BrushBuilder = Builder;
+		Builder->Build(Brush->GetWorld(), Brush);
+		FBSPOps::csgPrepMovingBrush(Brush);
+
+		if (bVolume)
+		{
+			// As the editor does: no material on a volume's faces, so none is dragged in as a dependency.
+			for (FPoly& Poly : Brush->Brush->Polys->Element)
+			{
+				Poly.Material = nullptr;
+			}
+		}
+		else
+		{
+			Brush->BrushType = Brush_Add;
+		}
+		Brush->PostEditChange();
+
+		if (!bVolume)
+		{
+			// Level geometry is baked from all brushes together; without this the new box would not show until the next rebuild.
+			ABrush::SetNeedRebuild(Brush->GetLevel());
+			GEditor->RebuildAlteredBSP();
+		}
+		if (!BrushHasShape(Brush))
+		{
+			OutError = TEXT("The editor did not build a shape for the brush. See editor_log_tail.");
+			return false;
+		}
+		return true;
+	}
+
+	/** Adds the box size to an actor description when the actor is a brush built as a box. */
+	void DescribeBrush(const AActor* Actor, const TSharedRef<FJsonObject>& Out)
+	{
+		const ABrush* Brush = Cast<ABrush>(Actor);
+		if (!Brush)
+		{
+			return;
+		}
+		if (const UCubeBuilder* Builder = Cast<UCubeBuilder>(Brush->BrushBuilder))
+		{
+			Out->SetArrayField(TEXT("size"), TArray<TSharedPtr<FJsonValue>>{
+				MakeShared<FJsonValueNumber>(Builder->X), MakeShared<FJsonValueNumber>(Builder->Y), MakeShared<FJsonValueNumber>(Builder->Z) });
+		}
+		if (!BrushHasShape(Brush))
+		{
+			Out->SetStringField(TEXT("warning"), TEXT("This brush has no shape, so it blocks, triggers and affects nothing. Give it one with actor_update and 'size'."));
+		}
+		else if (Brush->IsA<AVolume>())
+		{
+			Out->SetStringField(TEXT("note"), TEXT("A volume is invisible in play. It does not move at run time; for moving things use a mesh actor."));
+		}
+		else
+		{
+			Out->SetStringField(TEXT("note"), TEXT("A brush is static level geometry: it cannot move at run time. For moving platforms use a mesh actor."));
+		}
 	}
 
 	void RegisterContextTools()
@@ -257,13 +362,15 @@ namespace
 
 		FCursorToolBuilder(TEXT("actor_spawn"), EditorPack)
 			.Describe(TEXT("Place an actor in the open level. 'class' can be an actor class (PointLight, StaticMeshActor), a Blueprint asset path, "
-				"or an asset that the editor knows how to place (a Static Mesh path creates a StaticMeshActor using it). Undoable."))
+				"or an asset that the editor knows how to place (a Static Mesh path creates a StaticMeshActor using it). "
+				"Volumes (BlockingVolume, KillZVolume, TriggerVolume, PostProcessVolume, NavMeshBoundsVolume...) and Brush are placed as a box of 'size'. Undoable."))
 			.Risk(ECursorToolRisk::Mutating)
 			.Schema(FCursorSchema()
 				.Str(TEXT("class"), TEXT("Actor class name, /Script path, or asset path."), true)
 				.Vec3(TEXT("location"), TEXT("World location [x, y, z] in centimetres. Default origin."))
 				.Vec3(TEXT("rotation"), TEXT("Rotation [pitch, yaw, roll] in degrees."))
 				.Vec3(TEXT("scale"), TEXT("Scale [x, y, z]. Default 1."))
+				.Vec3(TEXT("size"), TEXT("Volumes and brushes only: full box size [x, y, z] in centimetres, centred on the location. Default [200, 200, 200]. Leave scale at 1 and use this."))
 				.Str(TEXT("label"), TEXT("Label to show in the World Outliner."))
 				.Str(TEXT("folder"), TEXT("World Outliner folder to put it in.")))
 			.Run([](const FCursorArgs& Args, const FCursorToolContext&)
@@ -327,6 +434,25 @@ namespace
 					return FCursorToolResult::Error(TEXT("The editor refused to spawn the actor. See editor_log_tail for the reason."));
 				}
 
+				FVector Size(200.0);
+				const bool bSize = Args.Vec(TEXT("size"), Size);
+				if (ABrush* Brush = Cast<ABrush>(Spawned))
+				{
+					// Placed this way a volume has no shape at all unless the level's builder brush happens to have one.
+					FString BrushError;
+					if ((bSize || !BrushHasShape(Brush)) && !BuildBoxBrush(Brush, Size, BrushError))
+					{
+						Spawned->GetWorld()->EditorDestroyActor(Spawned, false);
+						return FCursorToolResult::Error(BrushError);
+					}
+				}
+				else if (bSize)
+				{
+					const FString ClassName = Spawned->GetClass()->GetName();
+					Spawned->GetWorld()->EditorDestroyActor(Spawned, false);
+					return FCursorToolResult::Error(FString::Printf(TEXT("'size' is only for volumes and brushes; %s is neither. Use 'scale' (a basic-shape mesh is 100 cm at scale 1)."), *ClassName));
+				}
+
 				FVector Scale;
 				if (Args.Vec(TEXT("scale"), Scale))
 				{
@@ -340,12 +466,14 @@ namespace
 				{
 					Spawned->SetFolderPath(FName(*Args.Str(TEXT("folder"))));
 				}
-				return FCursorToolResult::OkJson(CursorToolHelpers::DescribeActor(Spawned, true));
+				TSharedRef<FJsonObject> Out = CursorToolHelpers::DescribeActor(Spawned, true);
+				DescribeBrush(Spawned, Out);
+				return FCursorToolResult::OkJson(Out);
 			})
 			.Register();
 
 		FCursorToolBuilder(TEXT("actor_update"), EditorPack)
-			.Describe(TEXT("Move, rotate, scale, relabel or re-folder an actor. Only the fields you pass change. Undoable. "
+			.Describe(TEXT("Move, rotate, scale, relabel or re-folder an actor, or give a volume or brush a new box 'size'. Only the fields you pass change. Undoable. "
 				"For other properties use object_set_properties."))
 			.Risk(ECursorToolRisk::Mutating)
 			.Schema(FCursorSchema()
@@ -353,6 +481,7 @@ namespace
 				.Vec3(TEXT("location"), TEXT("New world location [x, y, z]."))
 				.Vec3(TEXT("rotation"), TEXT("New rotation [pitch, yaw, roll] in degrees."))
 				.Vec3(TEXT("scale"), TEXT("New scale [x, y, z]."))
+				.Vec3(TEXT("size"), TEXT("Volumes and brushes only: new full box size [x, y, z] in centimetres."))
 				.Str(TEXT("label"), TEXT("New World Outliner label."))
 				.Str(TEXT("folder"), TEXT("New World Outliner folder. Empty string moves it to the root.")))
 			.Run([](const FCursorArgs& Args, const FCursorToolContext&)
@@ -371,9 +500,17 @@ namespace
 				const bool bScale = Args.Vec(TEXT("scale"), Scale);
 				const bool bLabel = Args.Has(TEXT("label"));
 				const bool bFolder = Args.Raw()->HasField(TEXT("folder"));
-				if (!bLocation && !bRotation && !bScale && !bLabel && !bFolder)
+				FVector Size;
+				const bool bSize = Args.Vec(TEXT("size"), Size);
+				if (!bLocation && !bRotation && !bScale && !bLabel && !bFolder && !bSize)
 				{
-					return FCursorToolResult::Error(TEXT("Nothing to change: pass at least one of location, rotation, scale, label, folder."));
+					return FCursorToolResult::Error(TEXT("Nothing to change: pass at least one of location, rotation, scale, size, label, folder."));
+				}
+				ABrush* Brush = Cast<ABrush>(Actor);
+				if (bSize && !Brush)
+				{
+					return FCursorToolResult::Error(FString::Printf(TEXT("'size' is only for volumes and brushes; %s is a %s. Use 'scale' (a basic-shape mesh is 100 cm at scale 1)."),
+						*Actor->GetActorLabel(), *Actor->GetClass()->GetName()));
 				}
 
 				if ((bLocation || bRotation || bScale) && !Actor->GetRootComponent())
@@ -390,10 +527,16 @@ namespace
 					if (bScale) { Actor->SetActorScale3D(Scale); }
 					Actor->PostEditMove(/*bFinished*/ true);
 				}
+				if (bSize && !BuildBoxBrush(Brush, Size, Error))
+				{
+					return FCursorToolResult::Error(Error);
+				}
 				if (bLabel) { Actor->SetActorLabel(Args.Str(TEXT("label"))); }
 				if (bFolder) { Actor->SetFolderPath(FName(*Args.Str(TEXT("folder")))); }
 				Actor->MarkPackageDirty();
-				return FCursorToolResult::OkJson(CursorToolHelpers::DescribeActor(Actor, false));
+				TSharedRef<FJsonObject> Out = CursorToolHelpers::DescribeActor(Actor, false);
+				DescribeBrush(Actor, Out);
+				return FCursorToolResult::OkJson(Out);
 			})
 			.Register();
 

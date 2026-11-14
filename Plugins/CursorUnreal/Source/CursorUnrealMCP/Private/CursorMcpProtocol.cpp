@@ -234,6 +234,17 @@ void FCursorMcpProtocol::HandleMessage(const FString& RequestJson, FOnResponse O
 				TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 				TArray<TSharedPtr<FJsonValue>> Content;
 				Content.Add(MakeShared<FJsonValueObject>(TextBlock));
+				for (const FCursorImage& Image : ToolResult.Images)
+				{
+					if (Image.IsValid())
+					{
+						TSharedRef<FJsonObject> ImageBlock = MakeShared<FJsonObject>();
+						ImageBlock->SetStringField(TEXT("type"), TEXT("image"));
+						ImageBlock->SetStringField(TEXT("data"), Image.ToBase64());
+						ImageBlock->SetStringField(TEXT("mimeType"), Image.MimeType);
+						Content.Add(MakeShared<FJsonValueObject>(ImageBlock));
+					}
+				}
 				Result->SetArrayField(TEXT("content"), Content);
 				Result->SetBoolField(TEXT("isError"), ToolResult.bIsError);
 				if (ToolResult.Structured.IsValid() && !ToolResult.bIsError)

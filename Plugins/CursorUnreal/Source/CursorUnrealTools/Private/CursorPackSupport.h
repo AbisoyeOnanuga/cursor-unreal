@@ -28,6 +28,15 @@ namespace CursorPackSupport
 
 	/** Case-insensitive search of a list for a name; returns INDEX_NONE when absent. */
 	int32 IndexOfName(const TArray<FString>& Names, const FString& Wanted);
+
+	/** Lower case with everything but letters and digits removed, so "Space Bar", "space_bar" and "SpaceBar" compare equal. */
+	FString Squash(const FString& Text);
+
+	/**
+	 * Turns the spellings a model reaches for ("Space", (KeyName="W"), EKeys::D, gamepad_a) into the engine's own key name.
+	 * An empty value gives "None". Fails, naming close matches, when the text is not a key.
+	 */
+	bool NormaliseKeyName(const FString& Value, FString& OutName, FString& OutError);
 }
 
 /**

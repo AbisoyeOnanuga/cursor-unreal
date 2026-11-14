@@ -3,6 +3,7 @@
 #include "CursorJson.h"
 #include "CursorMcpProtocol.h"
 #include "CursorMcpServer.h"
+#include "CursorTestSupport.h"
 #include "CursorTool.h"
 #include "CursorToolRegistry.h"
 #include "Misc/AutomationTest.h"
@@ -29,6 +30,16 @@ namespace CursorMcpTests
 					Out->SetStringField(TEXT("text"), Args.Str(TEXT("text")));
 					Out->SetStringField(TEXT("caller"), Ctx.Caller);
 					return FCursorToolResult::OkJson(Out);
+				})
+				.Register();
+
+			FCursorToolBuilder(TEXT("__mcp_picture"), TestPack)
+				.Describe(TEXT("Returns a picture, for tests."))
+				.Run([](const FCursorArgs&, const FCursorToolContext&)
+				{
+					FCursorToolResult Result = FCursorToolResult::Ok(TEXT("taken"));
+					Result.Images.Add(CursorTest::MakeImage(7, 16, 9, true));
+					return Result;
 				})
 				.Register();
 
@@ -159,6 +170,18 @@ bool FCursorMcpProtocolTest::RunTest(const FString&)
 		Reply = Send(TEXT("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"__mcp_native_only\"}}"));
 		TestTrue(TEXT("native-only tool is refused over MCP"), Reply->GetObjectField(TEXT("result"))->GetBoolField(TEXT("isError")));
 
+		// A tool that returns a picture: the picture follows the text as an image block, as the MCP specification lays out.
+		Reply = Send(TEXT("{\"jsonrpc\":\"2.0\",\"id\":70,\"method\":\"tools/call\",\"params\":{\"name\":\"__mcp_picture\"}}"));
+		const TArray<TSharedPtr<FJsonValue>> Content = Reply->GetObjectField(TEXT("result"))->GetArrayField(TEXT("content"));
+		TestEqual(TEXT("text and picture"), Content.Num(), 2);
+		if (Content.Num() == 2)
+		{
+			const FCursorImage Expected = CursorTest::MakeImage(7, 16, 9, true);
+			TestEqual(TEXT("text first"), Content[0]->AsObject()->GetStringField(TEXT("type")), FString(TEXT("text")));
+			TestEqual(TEXT("then the picture"), Content[1]->AsObject()->GetStringField(TEXT("type")), FString(TEXT("image")));
+			TestEqual(TEXT("with its type"), Content[1]->AsObject()->GetStringField(TEXT("mimeType")), FString(TEXT("image/jpeg")));
+			TestEqual(TEXT("and its bytes"), Content[1]->AsObject()->GetStringField(TEXT("data")), Expected.ToBase64());
+		}
 		Reply = Send(TEXT("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{}}"));
 		TestEqual(TEXT("missing name is invalid params"), ErrorCode(Reply), -32602);
 	}
