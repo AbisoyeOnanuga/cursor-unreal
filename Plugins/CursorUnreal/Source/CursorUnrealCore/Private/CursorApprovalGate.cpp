@@ -101,7 +101,7 @@ void FCursorApprovalGate::Evaluate(const ICursorTool& Tool, const TSharedRef<FJs
 				continue; // Execution reports unknown tools.
 			}
 			const FString SubArgs = Sub.Args.IsValid() ? CursorJson::ToString(Sub.Args.ToSharedRef()) : TEXT("{}");
-			const FString Label = FString::Printf(TEXT("%s %s"), *Sub.ToolName.ToString(), *CursorJson::Truncate(CursorRedactor::Redact(SubArgs), 300));
+			const FString Label = FString::Printf(TEXT("%s %s"), *Sub.ToolName.ToString(), *CursorJson::Truncate(CursorRedactor::Redact(SubArgs), 120));
 			Consider(Sub.ToolName, SubTool->GetRisk(), Label);
 		}
 	}

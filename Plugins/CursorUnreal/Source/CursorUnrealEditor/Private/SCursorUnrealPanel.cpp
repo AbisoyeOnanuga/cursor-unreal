@@ -10,7 +10,11 @@
 #include "CursorUnrealLog.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Misc/CommandLine.h"
@@ -26,7 +30,6 @@
 #include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
-#include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
 
 #define LOCTEXT_NAMESPACE "CursorUnrealPanel"
@@ -95,19 +98,100 @@ void SCursorUnrealPanel::Construct(const FArguments& InArgs)
 
 namespace
 {
-	struct FPendingApproval
-	{
-		TFunction<void(ECursorApprovalDecision)> Respond;
-		TWeakPtr<SNotificationItem> Item;
-		bool bAnswered = false;
-	};
-
 	FString CallerLabel(const FString& Caller)
 	{
 		if (Caller == FCursorToolRegistry::CallerNative) { return TEXT("the in-editor agent"); }
 		if (Caller == FCursorToolRegistry::CallerCursorSdk) { return TEXT("a Cursor agent (through the bridge)"); }
 		if (Caller == FCursorToolRegistry::CallerMcp) { return TEXT("an MCP client such as Cursor IDE"); }
 		return Caller;
+	}
+
+	/** One line the user can scan: collapses whitespace and cuts length. */
+	FString OneLine(FString Text, int32 MaxChars)
+	{
+		Text.ReplaceInline(TEXT("\r\n"), TEXT(" "));
+		Text.ReplaceInline(TEXT("\n"), TEXT(" "));
+		Text.ReplaceInline(TEXT("\t"), TEXT(" "));
+		while (Text.Contains(TEXT("  ")))
+		{
+			Text.ReplaceInline(TEXT("  "), TEXT(" "));
+		}
+		return CursorJson::Truncate(Text.TrimStartAndEnd(), MaxChars);
+	}
+
+	/**
+	 * What the dialog shows under the title. Batches are counted by tool, with a short sample of
+	 * calls — never the full argument blob again. A single call gets a short argument preview.
+	 * The scroll box, not this text, is what keeps the window on screen.
+	 */
+	FString BuildApprovalDetail(const FCursorApprovalRequest& Request)
+	{
+		if (Request.SubCalls.Num() == 0)
+		{
+			return OneLine(Request.ArgsSummary, 480);
+		}
+
+		TMap<FString, int32> Counts;
+		for (const FString& Line : Request.SubCalls)
+		{
+			FString Tool = Line;
+			int32 Space = INDEX_NONE;
+			if (Line.FindChar(TEXT(' '), Space))
+			{
+				Tool = Line.Left(Space);
+			}
+			Counts.FindOrAdd(Tool)++;
+		}
+
+		TArray<FString> Parts;
+		TSet<FString> Listed;
+		for (const FName& Name : Request.ToolsNeedingApproval)
+		{
+			const FString Key = Name.ToString();
+			if (const int32* Count = Counts.Find(Key))
+			{
+				Parts.Add(FString::Printf(TEXT("%dx %s"), *Count, *Key));
+				Listed.Add(Key);
+			}
+		}
+		for (const TPair<FString, int32>& Pair : Counts)
+		{
+			if (!Listed.Contains(Pair.Key))
+			{
+				Parts.Add(FString::Printf(TEXT("%dx %s"), Pair.Value, *Pair.Key));
+			}
+		}
+
+		FString Detail = FString::Printf(TEXT("%d call%s need approval (%s)."),
+			Request.SubCalls.Num(),
+			Request.SubCalls.Num() == 1 ? TEXT("") : TEXT("s"),
+			*FString::Join(Parts, TEXT(", ")));
+
+		constexpr int32 MaxSamples = 5;
+		const int32 Shown = FMath::Min(MaxSamples, Request.SubCalls.Num());
+		for (int32 Index = 0; Index < Shown; ++Index)
+		{
+			Detail += TEXT("\n• ") + OneLine(Request.SubCalls[Index], 100);
+		}
+		if (Request.SubCalls.Num() > MaxSamples)
+		{
+			Detail += FString::Printf(TEXT("\n…and %d more."), Request.SubCalls.Num() - MaxSamples);
+		}
+		return Detail;
+	}
+
+	TSharedRef<SWidget> MakeDecisionButton(const FText& Label, const FText& Tip, TFunction<void()> OnClick)
+	{
+		return SNew(SButton)
+			.ToolTipText(Tip)
+			.OnClicked_Lambda([OnClick = MoveTemp(OnClick)]()
+			{
+				OnClick();
+				return FReply::Handled();
+			})
+			[
+				SNew(STextBlock).Text(Label)
+			];
 	}
 
 	void PromptForApproval(const FCursorApprovalRequest& Request, TFunction<void(ECursorApprovalDecision)> Respond)
@@ -118,70 +202,126 @@ namespace
 			return;
 		}
 
-		FString Body = FString::Printf(TEXT("Asked for by %s. Risk: %s.\n\n%s"),
-			*CallerLabel(Request.Caller), LexToString(Request.Risk), *CursorJson::Truncate(Request.ArgsSummary, 900));
-		if (Request.SubCalls.Num() > 0)
-		{
-			Body += TEXT("\n\nCalls inside it that need approval:\n") + FString::Join(Request.SubCalls, TEXT("\n"));
-		}
-
 		TArray<FString> SessionTools;
 		for (const FName& Tool : Request.ToolsNeedingApproval)
 		{
 			SessionTools.Add(Tool.ToString());
 		}
+		const FString SessionList = SessionTools.Num() > 0 ? FString::Join(SessionTools, TEXT(", ")) : Request.ToolName;
+		const FText Intro = FText::Format(
+			LOCTEXT("ApprovalIntro", "Asked for by {0}. Risk: {1}."),
+			FText::FromString(CallerLabel(Request.Caller)),
+			FText::FromString(LexToString(Request.Risk)));
+		const FText Detail = FText::FromString(BuildApprovalDetail(Request));
 
-		const TSharedRef<FPendingApproval> Pending = MakeShared<FPendingApproval>();
-		Pending->Respond = MoveTemp(Respond);
-		const auto Decide = [Pending](ECursorApprovalDecision Decision)
+		struct FChoice
 		{
-			if (Pending->bAnswered)
+			ECursorApprovalDecision Decision = ECursorApprovalDecision::Deny;
+			TWeakPtr<SWindow> Window;
+			bool bAnswered = false;
+
+			void Choose(ECursorApprovalDecision Next)
 			{
-				return;
+				if (bAnswered)
+				{
+					return;
+				}
+				bAnswered = true;
+				Decision = Next;
+				if (const TSharedPtr<SWindow> Open = Window.Pin())
+				{
+					Open->RequestDestroyWindow();
+				}
 			}
-			Pending->bAnswered = true;
-			if (const TSharedPtr<SNotificationItem> Item = Pending->Item.Pin())
-			{
-				Item->SetCompletionState(Decision == ECursorApprovalDecision::Deny ? SNotificationItem::CS_Fail : SNotificationItem::CS_Success);
-				Item->ExpireAndFadeout();
-			}
-			Pending->Respond(Decision);
 		};
+		const TSharedRef<FChoice> Choice = MakeShared<FChoice>();
 
-		FNotificationInfo Info(FText::Format(LOCTEXT("ApprovalTitle", "Allow the agent to run {0}?"), FText::FromString(Request.ToolName)));
-		Info.SubText = FText::FromString(Body);
-		Info.bFireAndForget = false;
-		Info.bUseSuccessFailIcons = false;
-		Info.bUseThrobber = false;
-		Info.ExpireDuration = 0.0f;
-		Info.FadeOutDuration = 0.3f;
-		Info.WidthOverride = 560.0f;
-		Info.ButtonDetails.Add(FNotificationButtonInfo(
-			LOCTEXT("AllowOnce", "Allow once"),
-			LOCTEXT("AllowOnceTip", "Run this call. The next one asks again."),
-			FSimpleDelegate::CreateLambda([Decide]() { Decide(ECursorApprovalDecision::AllowOnce); }),
-			SNotificationItem::CS_Pending));
-		Info.ButtonDetails.Add(FNotificationButtonInfo(
-			LOCTEXT("AllowSession", "Allow until I close the editor"),
-			FText::Format(LOCTEXT("AllowSessionTip", "Run this call and stop asking, until the editor closes, for: {0}"),
-				FText::FromString(FString::Join(SessionTools, TEXT(", ")))),
-			FSimpleDelegate::CreateLambda([Decide]() { Decide(ECursorApprovalDecision::AllowForSession); }),
-			SNotificationItem::CS_Pending));
-		Info.ButtonDetails.Add(FNotificationButtonInfo(
-			LOCTEXT("Deny", "Deny"),
-			LOCTEXT("DenyTip", "Do not run it. The agent is told it was refused."),
-			FSimpleDelegate::CreateLambda([Decide]() { Decide(ECursorApprovalDecision::Deny); }),
-			SNotificationItem::CS_Pending));
+		const TSharedRef<SWindow> Window = SNew(SWindow)
+			.Title(FText::Format(LOCTEXT("ApprovalTitle", "Allow the agent to run {0}?"), FText::FromString(Request.ToolName)))
+			.SizingRule(ESizingRule::Autosized)
+			.SupportsMaximize(false)
+			.SupportsMinimize(false)
+			.HasCloseButton(true)
+			.CreateTitleBar(true)
+			.IsTopmostWindow(true)
+			.FocusWhenFirstShown(true)
+			[
+				SNew(SBox)
+				.Padding(FMargin(16.0f))
+				.MinDesiredWidth(480.0f)
+				.MaxDesiredWidth(560.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+					[
+						SNew(STextBlock)
+						.Text(Intro)
+						.AutoWrapText(true)
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 0.0f, 0.0f, 12.0f)
+					[
+						// Cap height so a long batch cannot push the buttons or the title off screen.
+						SNew(SBox)
+						.MaxDesiredHeight(220.0f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								SNew(STextBlock)
+								.Text(Detail)
+								.AutoWrapText(true)
+							]
+						]
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+						[
+							MakeDecisionButton(
+								LOCTEXT("AllowOnce", "Allow once"),
+								LOCTEXT("AllowOnceTip", "Run this call. The next one asks again."),
+								[Choice]() { Choice->Choose(ECursorApprovalDecision::AllowOnce); })
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+						[
+							MakeDecisionButton(
+								LOCTEXT("AllowSession", "Allow until I close the editor"),
+								FText::Format(LOCTEXT("AllowSessionTip", "Run this call and stop asking, until the editor closes, for: {0}"),
+									FText::FromString(SessionList)),
+								[Choice]() { Choice->Choose(ECursorApprovalDecision::AllowForSession); })
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							MakeDecisionButton(
+								LOCTEXT("Deny", "Deny"),
+								LOCTEXT("DenyTip", "Do not run it. The agent is told it was refused."),
+								[Choice]() { Choice->Choose(ECursorApprovalDecision::Deny); })
+						]
+					]
+				]
+			];
 
-		const TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info);
-		if (!Item.IsValid())
+		Choice->Window = Window;
+		Window->SetOnWindowClosed(FOnWindowClosed::CreateLambda([Choice](const TSharedRef<SWindow>&)
 		{
-			// Nowhere to ask, so the safe answer.
-			Decide(ECursorApprovalDecision::Deny);
-			return;
-		}
-		Pending->Item = Item;
-		Item->SetCompletionState(SNotificationItem::CS_Pending);
+			// Closing the window without a button is a refusal.
+			Choice->Choose(ECursorApprovalDecision::Deny);
+		}));
+
+		const TSharedPtr<SWindow> Parent = FSlateApplication::Get().GetActiveTopLevelWindow();
+		FSlateApplication::Get().AddModalWindow(Window, Parent);
+		Respond(Choice->Decision);
 	}
 }
 
