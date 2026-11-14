@@ -29,6 +29,19 @@ description: >-
 5. Save only what you changed (`asset_save` with paths, or `save: true` on tools that support it).
 6. Prefer pack tools over `python_exec`. If you must use Python, keep scripts short and say why.
 
+## Addressing objects
+
+The `object` argument of `object_get_properties` / `object_set_properties` takes any of these, so class defaults and level settings do not need `python_exec`:
+
+- An actor by label or name; a component as `Label.ComponentName`.
+- `WorldSettings` — the open level's settings actor, whatever the level calls it (game mode override, kill Z).
+- An asset path: `/Game/Folder/Asset`.
+- A Blueprint's class defaults: `/Game/Folder/BP_X.Default__BP_X_C`. A native class's: `/Script/Engine.Default__Character`.
+- A component's defaults on a Blueprint: `/Game/Folder/BP_X.BP_X_C:Mesh_GEN_VARIABLE` for one the Blueprint added (after a compile), `/Game/Folder/BP_X.Default__BP_X_C:CharMoveComp` for one from the C++ parent. `...Default__BP_X_C.Mesh` and `...BP_X_C:Mesh` reach the same objects.
+- Project settings: `/Script/EngineSettings.Default__GameMapsSettings` and the like.
+
+A property name can go through a struct (`RelativeLocation.Z`) or through something the object owns (`CharacterMovement.MaxWalkSpeed` on a character). It cannot go through a reference to a shared asset; the error gives the asset's own path to use instead.
+
 ## Limits
 
 Do not mass-delete Content or run destructive console commands unless the user asked. Engine/plugin assets are read-only for write tools.

@@ -291,6 +291,26 @@ A cube the player pushes by walking into it.
 1.3 H and crate size + 0.75 H (default character: 117 to 137, use 130). The crate starts where
 it must be pushed 300 to 600 cm to the foot of the ledge.
 
+## Invisible walls
+
+A blocker the player cannot see: the edge of a course where the player can walk toward and away
+from the camera, or a limit to the play area. A blockout cube with drawing switched off.
+
+1. `actor_spawn` `{"class":"/Engine/BasicShapes/Cube","scale":[..],"location":[..],"label":"Wall_NearEdge","folder":"Blockout/<course>/Walls"}`
+2. `object_set_properties` on `Wall_NearEdge.StaticMeshComponent0`: `{"bVisible":false}`
+
+It still blocks; only drawing is off, in the editor view as well, so the label and folder are how
+the user finds it. Make it at least 2 H high so it cannot be jumped, and as long as the platform
+it guards. Tell the user the walls exist and which folder they are in.
+
+A side-on course whose character is locked to the plane (`player.md`) does not need them.
+
+## Brushes do not move
+
+A geometry brush (BSP) is fixed level geometry. Moving one while the game runs changes nothing
+the player sees or stands on. Anything that moves is a `BP_MovingPlatform`, which has its own
+mesh; never point a mover at a brush.
+
 ## Markers
 
 - Player start: `actor_spawn` `{"class":"PlayerStart","location":[x,0,top + capsule half height + 10]}`,

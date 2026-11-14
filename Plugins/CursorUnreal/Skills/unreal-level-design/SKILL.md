@@ -23,6 +23,9 @@ Reference files, read with `load_skill` and its `file` argument:
   when the prompt gives nothing else. Read it for any platformer or side-scroller request.
 - `gameplay-kit.md`: the exact tool calls that create the kit Blueprints and place them. Read it
   before the first moving platform, trigger, hazard, jump pad or goal.
+- `player.md`: a playable character with keyboard and gamepad controls, a side-on camera, and
+  the game mode that spawns it. Read it when the project has no character, when the user asks for
+  one, or when controls "do nothing".
 
 ## Order of work
 
@@ -65,7 +68,9 @@ If step 3 gives something that is not a Character, these reads fail. The engine'
 - Look for a character the project owns: `asset_search` with `{"class":"Blueprint","query":"Character"}`.
   If there is one clear candidate, measure it, and say that the level is not using it yet.
 - Otherwise use the engine `Character` row below, and say plainly that the project has no
-  playable character, so the level cannot be played as a platformer until one is added.
+  playable character, so the level cannot be played as a platformer until one is added. Offer
+  to build one (`player.md`); build it without asking when the user asked for something they
+  can play.
 - If a game mode whose pawn is that character exists, offer to set it on the level
   (`object_set_properties` on `WorldSettings`, property `DefaultGameMode`). Do it only when the
   user says yes.
@@ -231,13 +236,15 @@ Keep it short and in this order:
 
 ## Limits
 
-- These tools cannot build a playable character: there are no input nodes. The character and its
-  camera come from the project (the Third Person template is the quick way to get one).
+- A playable character is built by reading keys from the player controller (`player.md`). There
+  are no input-event nodes and no Enhanced Input actions, and no node that sets a property on
+  another object, so sprint and a mouse-turned camera are out of reach of the graph tools.
 - The Level Blueprint is not reachable. Level logic lives in the kit's actors, which point at
   each other through instance variables.
 - Blueprint casts, timelines and events bound to a component are not available. The kit is
   designed around that; say so if a request needs them, and offer C++ (`unreal-cpp-gameplay`).
-- You cannot play the level. Everything about feel is a first setting for the user to tune.
+- You cannot play the level. Everything about feel is a first setting for the user to tune. Do
+  not report that something works in play; report what you built and what you read back.
 
 ## If the user asks for geometry brushes (BSP)
 
@@ -252,3 +259,6 @@ already holds a box brush:
 3. Move it with `actor_update` *after* resizing: the rebuild snaps the location to the grid.
 
 If there is no box brush to copy, say so and build with cubes.
+
+Brushes are for geometry that stays still. Anything that moves is a `BP_MovingPlatform`
+(`gameplay-kit.md`, "Brushes do not move").
