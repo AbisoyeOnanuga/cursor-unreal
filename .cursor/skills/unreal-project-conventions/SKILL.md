@@ -3,8 +3,8 @@ name: unreal-project-conventions
 description: >-
   This project's own rules: asset naming, Content folder layout, C++ coding
   standard, and module boundaries. Load it before creating, naming, moving or
-  restructuring anything. Ships as a template: sections still marked TODO have
-  not been decided by the project yet.
+  restructuring anything: it says which folder each kind of asset goes in.
+  Folder layout is decided; sections still marked TODO are not.
 ---
 
 # Project conventions
@@ -43,20 +43,68 @@ types carry a `My` prefix (`AMyCharacter`).
 
 ## Folder layout
 
-TODO(project): Content tree. Example:
+These are decided rules, not examples.
+
+### Three roots, by who made the asset
 
 ```text
-/Game/Maps            levels
-/Game/Blueprints      gameplay Blueprints, one subfolder per feature
-/Game/Characters      one subfolder per character: meshes, anims, ABP
-/Game/Materials       shared materials and functions
-/Game/FX              Niagara systems and their textures
-/Game/Audio           cues, attenuation, source wavs
-/Game/Developers      personal scratch, never referenced by shipped content
-/Game/Assets          level design assets
+/Game/Agent/...       everything an agent creates. Real game content, not scratch.
+/Game/...             made by people on the team (same type folders, directly under /Game)
+/Game/Imported/...    brought in from outside (Fab, Marketplace, vendor packs), one subfolder per source
+/Game/Developers/...  personal scratch, never referenced by shipped content
 ```
 
-TODO(project): where agent-made test or scratch assets go. Example: `/Game/Assets`.
+- Everything you create goes under `/Game/Agent`, in the type folder from the table below.
+  Never create an asset directly under `/Game/<Type>` or under `/Game/Imported`.
+- Your own assets under `/Game/Agent` are updated in place. Do not make `_v2` copies of them.
+- A team-made asset under `/Game/<Type>` is edited in place, and only when the user names that
+  asset or has it selected. Otherwise build something new under `/Game/Agent`.
+- An imported asset is never edited. `asset_duplicate` it into the matching `/Game/Agent` folder
+  and change the copy.
+- Do not move assets between the three roots unless the user asks. Moving is how a person adopts
+  an agent-made asset, so it is their call.
+- Only when the user says the work is a test or throwaway does it go to
+  `/Game/Developers/<user>/` instead.
+
+### Which folder, by what you are making
+
+Paths are relative to `/Game/Agent`. Team-made content uses the same folders under `/Game`.
+`<Name>` is the character, prop or feature the asset belongs to, without a prefix.
+
+| You are making | Unreal type | Folder |
+| --- | --- | --- |
+| Level | World (map) | `Maps/` |
+| Level prop: the mesh | StaticMesh | `Props/<Name>/` |
+| Level prop with behaviour (door, pickup, lever) | Blueprint of Actor | `Props/<Name>/` |
+| Material, instance or texture used by one prop | Material, MaterialInstanceConstant, Texture2D | `Props/<Name>/` |
+| Character Blueprint | Blueprint of Character (or Pawn) | `Characters/<Name>/` |
+| Character mesh, skeleton, physics asset | SkeletalMesh, Skeleton, PhysicsAsset | `Characters/<Name>/Meshes/` |
+| Animation Blueprint | AnimBlueprint | `Characters/<Name>/Animations/` |
+| Animation for one character | AnimSequence, AnimMontage, BlendSpace, AimOffset | `Characters/<Name>/Animations/` |
+| Animation shared by several characters | same types | `Animations/` |
+| Rig | ControlRigBlueprint, IKRigDefinition, IKRetargeter | `Characters/<Name>/Rigs/` |
+| Material or texture used by one character | Material, MaterialInstanceConstant, Texture2D | `Characters/<Name>/Materials/` |
+| Player or AI controller | Blueprint of PlayerController, AIController | `Blueprints/Controllers/` |
+| Movement | Blueprint of CharacterMovementComponent or another MovementComponent | `Blueprints/Movement/` |
+| Input | InputAction, InputMappingContext (Enhanced Input) | `Input/` |
+| Game rules and framework | Blueprint of GameModeBase, GameStateBase, PlayerState, HUD, GameInstance | `Blueprints/Framework/` |
+| Gameplay Blueprint (anything else that acts in the world) | Blueprint of Actor or ActorComponent | `Blueprints/Gameplay/<Name>/` |
+| AI | BehaviorTree, BlackboardData, EnvQuery | `AI/` |
+| UI | WidgetBlueprint | `UI/` |
+| Material shared across the game | Material, MaterialInstanceConstant, MaterialFunction | `Materials/` |
+| Texture shared across the game | Texture2D | `Textures/` |
+| FX | NiagaraSystem, NiagaraEmitter, and textures only they use | `FX/` |
+| Audio | SoundCue, SoundWave, SoundAttenuation, MetaSoundSource | `Audio/` |
+| Data | DataAsset, DataTable, curves, Blueprint enums and structs | `Data/` |
+
+- An asset that belongs to one prop or one character lives with its owner. It moves to the shared
+  folder (`Materials/`, `Textures/`, `Animations/`) only once a second owner uses it.
+- A folder is created by saving the first asset into it. Do not create empty folders.
+- If what you are making is not in the table, use the nearest row and say which one you chose in
+  your summary. Do not add a new folder directly under `/Game/Agent` without asking.
+- State the full path of every asset you created or changed in your summary.
+- C++ (a `UCharacterMovementComponent` subclass, a controller base class) goes in the Source tree
+  below, not in Content.
 
 TODO(project): Source tree. Example: `Source/<Module>/Public` for headers other modules include,
 `Private` for everything else, one subfolder per feature.
