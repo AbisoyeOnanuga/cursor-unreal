@@ -8,12 +8,18 @@ public:
 	{
 		CursorToolPacks::RegisterEditorPack();
 		CursorToolPacks::RegisterAssetPack();
+		CursorToolPacks::RegisterBlueprintPack();
+		CursorToolPacks::RegisterCppPack();
+		CursorToolPacks::RegisterMaterialPack();
 	}
 
 	virtual void ShutdownModule() override
 	{
 		CursorToolPacks::UnregisterEditorPack();
 		CursorToolPacks::UnregisterAssetPack();
+		CursorToolPacks::UnregisterBlueprintPack();
+		CursorToolPacks::UnregisterCppPack();
+		CursorToolPacks::UnregisterMaterialPack();
 	}
 };
 

@@ -12,4 +12,16 @@ namespace CursorToolPacks
 	/** "assets": search, metadata, save, duplicate, rename, delete. */
 	void RegisterAssetPack();
 	void UnregisterAssetPack();
+
+	/** "blueprint": create, inspect and edit Blueprints (variables, components, common graph nodes, compile). */
+	void RegisterBlueprintPack();
+	void UnregisterBlueprintPack();
+
+	/** "cpp": cpp_create_class, cpp_build, and the NativeAgentOnly source_read / source_search / source_write. */
+	void RegisterCppPack();
+	void UnregisterCppPack();
+
+	/** "materials": create materials and instances, build expression graphs, set parameters, compile. */
+	void RegisterMaterialPack();
+	void UnregisterMaterialPack();
 }
