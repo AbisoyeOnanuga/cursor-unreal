@@ -4,7 +4,7 @@
 
 1. Copy `Packaged/<EngineVersion>/CursorUnreal/` into your project’s `Plugins/` folder (or enable this repo’s `Plugins/CursorUnreal`).
 2. Open the `.uproject` in the matching Unreal Editor and rebuild when prompted.
-3. Window → **Cursor Unreal**.
+3. Click **Agent** on the level editor toolbar, or Tools → **Cursor Unreal**.
 
 ### Cursor provider bridge
 
@@ -28,14 +28,14 @@ Choose Provider **Anthropic**, store the key on Setup. No Node install required.
 
 ## Skills for Cursor IDE
 
-In the Skills tab, **Install built-ins to project**. That copies `Plugins/CursorUnreal/Skills/*` into `<Project>/.cursor/skills/` so Cursor IDE / Cursor SDK agents can load the same guides.
+In the Skills tab, **Install all into this project**. That copies `Plugins/CursorUnreal/Skills/*` into `<Project>/.cursor/skills/` so Cursor IDE / Cursor SDK agents can load the same guides.
 
 ## MCP (optional)
 
 Not required for shipping the plugin. When you want Cursor IDE as a client:
 
 1. Start the editor so the MCP server is listening.
-2. Copy the token from Setup into `~/.cursor/mcp.json`.
+2. On the Setup tab, **Add to my Cursor config** (writes the `cursor-unreal` entry into `~/.cursor/mcp.json`), or **Copy config** and paste it yourself. The entry contains this editor's access token.
 3. Reload MCP servers in Cursor and list tools.
 
 See [Providers](Providers.md) and [measurements/phase1-mcp-latency.md](measurements/phase1-mcp-latency.md).

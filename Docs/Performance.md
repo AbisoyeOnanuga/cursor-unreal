@@ -2,7 +2,7 @@
 
 ## Performance tab
 
-Window → **Cursor Unreal** → **Performance**. Two tables:
+Tools → **Cursor Unreal** → **Performance**. Two tables:
 
 ### Recent tool calls
 

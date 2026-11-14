@@ -60,7 +60,7 @@ Do not delete other actors. Prefer project content under `/Game`.
 | User | `~/.cursor/skills/<name>/` | Cursor; in-editor only if enabled in Setup |
 | Project | `<Project>/.cursor/skills/<name>/` | Team + Cursor IDE / Cursor SDK |
 
-Higher layers override lower ones with the same `name`. Use **Install built-ins to project** in the Skills panel so Cursor IDE / Cursor SDK agents can read them. The installer never overwrites a project skill that was edited after install.
+Higher layers override lower ones with the same `name`. Use **Install all into this project** on the Skills tab so Cursor IDE / Cursor SDK agents can read them. The installer never overwrites a project skill that was edited after install.
 
 ### Customise one skill
 

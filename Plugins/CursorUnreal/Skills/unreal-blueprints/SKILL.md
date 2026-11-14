@@ -21,7 +21,7 @@ description: >-
 
 ## Workflow
 
-1. Look first: `blueprint_get_info` and `blueprint_get_nodes` with `pins: true`.
+1. Look first: `blueprint_get_info` and `blueprint_get_nodes` (pins are included unless you pass `include_pins: false`).
 2. Prefer a C++ parent for performance-critical logic; use Blueprint for tuning and high-level flow.
 3. Add an event (`BeginPlay`, `Tick`) only once — a second call returns the existing node.
 4. For PrintString and other library calls: `kind: call_function`, `class: KismetSystemLibrary`, `function: PrintString`.

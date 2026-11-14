@@ -13,6 +13,7 @@
 #include "CursorUnrealLog.h"
 #include "CursorUnrealSettings.h"
 #include "HAL/FileManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
@@ -347,6 +348,50 @@ bool FCursorSkillsTest::RunTest(const FString&)
 	TestFalse(TEXT("edited copy is flagged as modified"), Library.Find(TEXT("beta"))->bInstalledUnmodified);
 
 	IFileManager::Get().DeleteDirectory(*(FPaths::ProjectIntermediateDir() / TEXT("CursorUnrealTests")), false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCursorShippedSkillsTest, "CursorUnreal.Core.ShippedSkills", CursorCoreTests::Flags)
+bool FCursorShippedSkillsTest::RunTest(const FString&)
+{
+	// The skills in the plugin folder itself, read the way the editor reads them.
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("CursorUnreal"));
+	if (!TestTrue(TEXT("plugin found"), Plugin.IsValid()))
+	{
+		return false;
+	}
+	FCursorSkillLibrary::FLayerDirs Dirs;
+	Dirs.BuiltIn = Plugin->GetBaseDir() / TEXT("Skills");
+	FCursorSkillLibrary Library(Dirs);
+
+	for (const TCHAR* Name : { TEXT("unreal-blueprints"), TEXT("unreal-cpp-gameplay"), TEXT("unreal-materials"), TEXT("unreal-niagara"),
+		TEXT("unreal-animation"), TEXT("unreal-audio"), TEXT("unreal-editor-tools"), TEXT("unreal-optimisation"), TEXT("unreal-project-conventions") })
+	{
+		const FCursorSkillInfo* Info = Library.Find(Name);
+		if (!TestNotNull(*FString::Printf(TEXT("%s is shipped"), Name), Info))
+		{
+			continue;
+		}
+		// A name that differs from its folder would install under one name and load under another.
+		TestEqual(*FString::Printf(TEXT("%s: folder matches name"), Name), FPaths::GetCleanFilename(Info->Directory), FString(Name));
+		TestTrue(*FString::Printf(TEXT("%s: has a description for the prompt index"), Name), Info->Description.Len() > 20);
+
+		FString Body, Error;
+		TestTrue(*FString::Printf(TEXT("%s: loads"), Name), Library.Load(Name, Body, Error));
+		TestTrue(*FString::Printf(TEXT("%s: body is not empty"), Name), Body.Len() > 100);
+		TestFalse(*FString::Printf(TEXT("%s: frontmatter is not left in the body"), Name), Body.StartsWith(TEXT("---")));
+	}
+
+	// The conventions skill is a template: it has to say so, and cover the four areas it promises.
+	FString Body, Error;
+	if (Library.Load(TEXT("unreal-project-conventions"), Body, Error))
+	{
+		TestTrue(TEXT("conventions: marks what is undecided"), Body.Contains(TEXT("TODO(project)")));
+		for (const TCHAR* Heading : { TEXT("## Naming"), TEXT("## Folder layout"), TEXT("## Coding standard"), TEXT("## Module boundaries") })
+		{
+			TestTrue(*FString::Printf(TEXT("conventions: has '%s'"), Heading), Body.Contains(Heading));
+		}
+	}
 	return true;
 }
 
