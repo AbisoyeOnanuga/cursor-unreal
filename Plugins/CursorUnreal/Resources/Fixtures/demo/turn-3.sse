@@ -1,0 +1,33 @@
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_demo_3","type":"message","role":"assistant","content":[],"model":"claude-fixture-1","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":420,"cache_creation_input_tokens":140,"cache_read_input_tokens":5296,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"## This is the offline demo\n\nThe two tool calls above were **real**: they ran in this editor and their results are in the cards. "}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Everything I say is scripted, so I am not reading your message.\n\n"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"With a model connected, a turn looks the same:\n\n- I read the editor with tools such as `editor_get_context` and `asset_search`.\n"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"- I load a skill before work it covers.\n- Changes go through the undo history, and dangerous tools ask you first.\n\n"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Code arrives in blocks you can copy:\n\n```cpp\nUPROPERTY(EditAnywhere, Category = \"Demo\")\nfloat WalkSpeed = 600.0f;\n```\n\n"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"To talk to a real model, restart the editor without `-CursorUnrealDemo` and add a key in the **Setup** tab."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":188}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
