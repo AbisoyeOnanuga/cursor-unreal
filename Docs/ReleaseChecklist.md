@@ -13,7 +13,7 @@ Use before handing someone a packaged build. Plan phases 0–5 cover this; nothi
 Under `Packaged/<EngineVersion>/CursorUnreal/`:
 
 - [ ] `CursorUnreal.uplugin`, `Binaries/`, `Source/`
-- [ ] `Skills/` (nine built-in skill folders)
+- [ ] `Skills/` (ten built-in skill folders)
 - [ ] `Bridge/` with `bridge.mjs`, `package.json`, `lib/`, `test/` — **no** `node_modules/`
 - [ ] After install into a project: `cd Bridge && npm install` if using the Cursor provider
 

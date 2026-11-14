@@ -165,7 +165,10 @@ namespace CursorSource
 			OutError = TEXT("The path is empty.");
 			return false;
 		}
-		FString Full = FPaths::IsRelative(Trimmed) ? FPaths::ConvertRelativePathToFull(RelativeBase, Trimmed) : FPaths::ConvertRelativePathToFull(Trimmed);
+		// The base is made absolute first: for a project on the same drive as the engine, FPaths::ProjectDir() is
+		// relative ("../../../Users/..."), and joining onto that leaves '..' that cannot be collapsed, so every
+		// project-relative path would be refused as climbing out of its folder.
+		FString Full = FPaths::IsRelative(Trimmed) ? FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(RelativeBase), Trimmed) : FPaths::ConvertRelativePathToFull(Trimmed);
 		FPaths::NormalizeFilename(Full);
 		if (!FPaths::CollapseRelativeDirectories(Full))
 		{

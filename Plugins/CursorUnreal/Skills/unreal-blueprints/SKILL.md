@@ -27,6 +27,7 @@ description: >-
 4. For PrintString and other library calls: `kind: call_function`, `class: KismetSystemLibrary`, `function: PrintString`.
 5. Wire execution pins (`then` → `execute`) and data pins by the names `blueprint_get_nodes` reports.
 6. `blueprint_compile`, then fix errors before claiming done. Save with `asset_save` when the user wants it on disk.
+7. Moving platforms, triggers, pressure plates, kill zones, jump pads and goals have tested recipes: `load_skill` `unreal-level-design` with `file` `gameplay-kit.md`.
 
 ## Limits
 

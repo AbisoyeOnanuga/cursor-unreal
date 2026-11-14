@@ -24,6 +24,7 @@ description: >-
 1. Start with `editor_get_context` so paths and selection match the open map.
 2. Find assets with `asset_search` before inventing paths.
 3. Spawn and place with `actor_spawn` + `actor_update` (location/rotation/scale). Prefer centimetres.
+   Building or blocking out a level, or adding gameplay pieces to one: load `unreal-level-design` first for sizes and recipes.
 4. Batch related property changes in one `object_set_properties` call.
 5. Save only what you changed (`asset_save` with paths, or `save: true` on tools that support it).
 6. Prefer pack tools over `python_exec`. If you must use Python, keep scripts short and say why.

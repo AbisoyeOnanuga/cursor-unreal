@@ -200,7 +200,10 @@ namespace CursorToolHelpers
 		if (Path.StartsWith(TEXT("/")))
 		{
 			// Something already in memory (a class, an actor by full path, a loaded asset's subobject)?
-			if (UObject* Existing = StaticFindObject(UObject::StaticClass(), nullptr, *Path))
+			// "/Game/Folder/Asset" also names the package the asset lives in, and a loaded package is found
+			// first. Nobody means the package: fall through to the asset inside it.
+			UObject* Existing = StaticFindObject(UObject::StaticClass(), nullptr, *Path);
+			if (Existing && !Existing->IsA<UPackage>())
 			{
 				return Existing;
 			}

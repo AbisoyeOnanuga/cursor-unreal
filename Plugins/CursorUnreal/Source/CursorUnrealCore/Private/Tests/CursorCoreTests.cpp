@@ -365,7 +365,7 @@ bool FCursorShippedSkillsTest::RunTest(const FString&)
 	FCursorSkillLibrary Library(Dirs);
 
 	for (const TCHAR* Name : { TEXT("unreal-blueprints"), TEXT("unreal-cpp-gameplay"), TEXT("unreal-materials"), TEXT("unreal-niagara"),
-		TEXT("unreal-animation"), TEXT("unreal-audio"), TEXT("unreal-editor-tools"), TEXT("unreal-optimisation"), TEXT("unreal-project-conventions") })
+		TEXT("unreal-animation"), TEXT("unreal-audio"), TEXT("unreal-editor-tools"), TEXT("unreal-optimisation"), TEXT("unreal-project-conventions"), TEXT("unreal-level-design") })
 	{
 		const FCursorSkillInfo* Info = Library.Find(Name);
 		if (!TestNotNull(*FString::Printf(TEXT("%s is shipped"), Name), Info))

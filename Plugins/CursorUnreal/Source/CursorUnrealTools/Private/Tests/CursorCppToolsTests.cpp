@@ -301,7 +301,7 @@ bool FCursorCppToolsTest::RunTest(const FString&)
 	FString BackupPath;
 	if (!R.bIsError && R.Structured->HasField(TEXT("backup")))
 	{
-		BackupPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), R.Structured->GetStringField(TEXT("backup")));
+		BackupPath = FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), R.Structured->GetStringField(TEXT("backup")));
 		Cleanup.AddBackup(BackupPath);
 		TestTrue(TEXT("the backup is under Saved/CursorUnreal/Backups"), R.Structured->GetStringField(TEXT("backup")).StartsWith(TEXT("Saved/CursorUnreal/Backups/")));
 		TestTrue(TEXT("the backup holds the text from before the edit"), ReadFile(BackupPath).Contains(TEXT("int Beta = 2;")) && !ReadFile(BackupPath).Contains(TEXT("22")));
@@ -315,14 +315,14 @@ bool FCursorCppToolsTest::RunTest(const FString&)
 	TestTrue(TEXT("replace_all changes every match: ") + R.Text, !R.bIsError && R.Structured->GetIntegerField(TEXT("replacements")) == 2 && !ReadFile(AbsPath).Contains(TEXT("= 1;")));
 	if (!R.bIsError && R.Structured->HasField(TEXT("backup")))
 	{
-		Cleanup.AddBackup(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), R.Structured->GetStringField(TEXT("backup"))));
+		Cleanup.AddBackup(FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), R.Structured->GetStringField(TEXT("backup"))));
 	}
 
 	R = CursorTest::Call(TEXT("source_write"), *Args(TEXT("{\"path\":\"{0}\",\"content\":\"// replaced\\n\"}"), RelPath));
 	TestTrue(TEXT("overwriting a file is allowed and backed up: ") + R.Text, !R.bIsError && R.Structured->HasField(TEXT("backup")));
 	if (!R.bIsError && R.Structured->HasField(TEXT("backup")))
 	{
-		Cleanup.AddBackup(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), R.Structured->GetStringField(TEXT("backup"))));
+		Cleanup.AddBackup(FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), R.Structured->GetStringField(TEXT("backup"))));
 	}
 	TestEqual(TEXT("the overwrite replaced the contents"), ReadFile(AbsPath), FString(TEXT("// replaced\n")));
 
@@ -345,15 +345,15 @@ bool FCursorCppToolsTest::RunTest(const FString&)
 	{
 		TestTrue(TEXT("the dry run returns the header"), R.Structured->GetStringField(TEXT("header_contents")).Contains(TEXT("A") + ClassName));
 		TestTrue(TEXT("the dry run returns the source"), R.Structured->GetStringField(TEXT("source_contents")).Contains(TEXT("PrimaryActorTick")));
-		TestFalse(TEXT("a dry run writes nothing"), IFileManager::Get().FileExists(*FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), R.Structured->GetStringField(TEXT("header")))));
+		TestFalse(TEXT("a dry run writes nothing"), IFileManager::Get().FileExists(*FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), R.Structured->GetStringField(TEXT("header")))));
 	}
 
 	R = CursorTest::Call(TEXT("cpp_create_class"), *Args(TEXT("{\"name\":\"{0}\",\"parent_class\":\"Actor\"}"), ClassName));
 	TestFalse(TEXT("create a class: ") + R.Text, R.bIsError);
 	if (!R.bIsError)
 	{
-		const FString Header = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), R.Structured->GetStringField(TEXT("header")));
-		const FString SourceFile = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), R.Structured->GetStringField(TEXT("source")));
+		const FString Header = FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), R.Structured->GetStringField(TEXT("header")));
+		const FString SourceFile = FPaths::ConvertRelativePathToFull(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), R.Structured->GetStringField(TEXT("source")));
 		Cleanup.Files.Add(Header);
 		Cleanup.Files.Add(SourceFile);
 		TestTrue(TEXT("the header exists"), IFileManager::Get().FileExists(*Header));

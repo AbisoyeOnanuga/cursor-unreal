@@ -288,7 +288,20 @@ namespace
 					{
 						return FCursorToolResult::Error(FString::Printf(TEXT("'%s' is abstract and cannot be placed."), *Class->GetName()));
 					}
-					Spawned = Actors->SpawnActorFromClass(Class, Location, Rotation);
+					if (GEditor->FindActorFactoryForActorClass(Class))
+					{
+						Spawned = Actors->SpawnActorFromClass(Class, Location, Rotation);
+					}
+					else
+					{
+						// No actor factory: every Blueprint class, and natives such as Brush. For these the editor's
+						// placement code asks the level viewport what is under the mouse cursor before it spawns, which
+						// renders the viewport's hit proxies on every call and crashes when the viewport cannot render
+						// (a headless editor). The location is given here, so add the actor directly, as that code
+						// goes on to do itself.
+						Spawned = GEditor->AddActor(CursorToolHelpers::GetEditorWorld()->GetCurrentLevel(), Class, FTransform(Rotation, Location),
+							/*bSilent*/ true, RF_Transactional, /*bSelectActor*/ false);
+					}
 				}
 				else if (ClassText.StartsWith(TEXT("/")) && !ClassText.StartsWith(TEXT("/Script/")))
 				{
@@ -538,8 +551,12 @@ namespace
 				TArray<FString> Set, Failures;
 				for (const auto& Pair : Properties->Values)
 				{
+					// Changing a component of a placed Blueprint actor reruns the actor's construction script, which
+					// replaces its components. Look the object up again for each property, or every write after the
+					// first lands on the discarded component and is lost while still being reported as set.
 					FString SetError;
-					if (CursorToolHelpers::WriteProperty(Object, Pair.Key, Pair.Value, SetError))
+					Object = CursorToolHelpers::ResolveObject(Args.Str(TEXT("object")), SetError);
+					if (Object && CursorToolHelpers::WriteProperty(Object, Pair.Key, Pair.Value, SetError))
 					{
 						Set.Add(Pair.Key);
 					}
@@ -547,6 +564,11 @@ namespace
 					{
 						Failures.Add(SetError);
 					}
+				}
+				Object = CursorToolHelpers::ResolveObject(Args.Str(TEXT("object")), Error);
+				if (!Object)
+				{
+					return FCursorToolResult::Error(Error);
 				}
 				if (Set.Num() > 0)
 				{
