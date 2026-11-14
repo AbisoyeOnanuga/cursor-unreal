@@ -1,0 +1,63 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Cursor Unreal",
+	"Description": "AI agent tooling for the Unreal Editor: an in-editor agent panel, a tool registry for Blueprint, C++, material, Niagara, animation and audio work, and a local MCP server for Cursor.",
+	"Category": "Editor",
+	"CreatedBy": "Abisoye Onanuga",
+	"CreatedByURL": "https://github.com/AbisoyeOnanuga/cursor-unreal",
+	"DocsURL": "https://github.com/AbisoyeOnanuga/cursor-unreal/tree/main/Docs",
+	"MarketplaceURL": "",
+	"SupportURL": "https://github.com/AbisoyeOnanuga/cursor-unreal/issues",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "CursorUnrealCore",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CursorUnrealMCP",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CursorUnrealAgent",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CursorUnrealTools",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CursorUnrealToolsNiagara",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CursorUnrealEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true
+		},
+		{
+			"Name": "Niagara",
+			"Enabled": true
+		}
+	]
+}

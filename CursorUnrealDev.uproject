@@ -1,0 +1,19 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.6",
+	"Category": "",
+	"Description": "Development host project for the CursorUnreal plugin.",
+	"Modules": [
+		{
+			"Name": "CursorUnrealDev",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "CursorUnreal",
+			"Enabled": true
+		}
+	]
+}
