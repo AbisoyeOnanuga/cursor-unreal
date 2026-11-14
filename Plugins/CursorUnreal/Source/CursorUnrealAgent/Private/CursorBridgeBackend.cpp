@@ -8,6 +8,7 @@
 #include "CursorTool.h"
 #include "CursorToolRegistry.h"
 #include "CursorUnrealSettings.h"
+#include "Containers/Ticker.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
@@ -174,19 +175,21 @@ bool FCursorBridgeBackend::EnsureProcess(FString& OutError)
 		}
 	}
 
-	Process = MakeUnique<FCursorBridgeProcess>();
-	TWeakPtr<FCursorBridgeBackend> Weak = AsShared();
-	Process->OnLine = [Weak](const FString& Line)
+	TUniquePtr<FCursorBridgeProcess> Next = MakeUnique<FCursorBridgeProcess>();
+	// SharedThis is safe: this object is always owned by a TSharedPtr (CreateBackend / tests).
+	const TWeakPtr<FCursorBridgeBackend> Weak = SharedThis(this);
+	Next->OnLine = [Weak](const FString& Line)
 	{
 		if (const TSharedPtr<FCursorBridgeBackend> Self = Weak.Pin())
 		{
 			Self->HandleLine(Line);
 		}
 	};
-	Process->OnExit = [Weak](int32 Code)
+	Next->OnExit = [Weak](int32 Code)
 	{
 		if (const TSharedPtr<FCursorBridgeBackend> Self = Weak.Pin())
 		{
+			// Never destroy the process from inside its own callback; mark it dead and drop it next tick.
 			Self->HandleProcessExit(Code);
 		}
 	};
@@ -201,12 +204,13 @@ bool FCursorBridgeBackend::EnsureProcess(FString& OutError)
 	bReady = false;
 	bInitInFlight = false;
 	InitFingerprint.Reset();
-	if (!Process->Start(Install.NodePath, Install.BridgeScript, ExtraArgs, OutError))
+	if (!Next->Start(Install.NodePath, Install.BridgeScript, ExtraArgs, OutError))
 	{
-		Process.Reset();
 		return false;
 	}
-	StatusLine = FString::Printf(TEXT("Bridge starting (pid %u)."), Process->GetProcessId());
+	const uint32 Pid = Next->GetProcessId();
+	Process = MoveTemp(Next);
+	StatusLine = FString::Printf(TEXT("Bridge starting (pid %u)."), Pid);
 	return true;
 }
 
@@ -776,7 +780,19 @@ void FCursorBridgeBackend::HandleProcessExit(int32 ExitCode)
 	{
 		Fail(FString::Printf(TEXT("The Cursor bridge stopped unexpectedly (exit code %d)."), ExitCode));
 	}
-	Process.Reset();
+	// Drop the process on the next tick so we are not destroying it from inside its ticker callback.
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[Weak = TWeakPtr<FCursorBridgeBackend>(SharedThis(this))](float)
+		{
+			if (const TSharedPtr<FCursorBridgeBackend> Self = Weak.Pin())
+			{
+				if (Self->Process && !Self->Process->IsRunning())
+				{
+					Self->Process.Reset();
+				}
+			}
+			return false;
+		}), 0.0f);
 }
 
 void FCursorBridgeBackend::BeginTurn(FAgentEventSink InSink)
