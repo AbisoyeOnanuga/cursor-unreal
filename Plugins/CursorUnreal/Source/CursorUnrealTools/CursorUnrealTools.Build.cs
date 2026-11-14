@@ -30,8 +30,13 @@ public class CursorUnrealTools : ModuleRules
 			"BlueprintGraph",
 			"KismetCompiler",
 			"Kismet",
-			// Material pack: UMaterialEditingLibrary.
-			"MaterialEditor"
+			// Material pack: UMaterialEditingLibrary. RHI for GMaxRHIFeatureLevel at compile time.
+			"MaterialEditor",
+			"RHI",
+			// Animation pack: UAnimBlueprint / factory (UnrealEd). AnimGraph for schema types used by graphs.
+			"AnimGraph",
+			// Audio pack: SoundCue factory and editor preview playback.
+			"AudioEditor"
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)

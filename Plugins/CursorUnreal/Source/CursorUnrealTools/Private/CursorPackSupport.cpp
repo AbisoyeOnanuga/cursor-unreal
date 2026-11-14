@@ -85,6 +85,25 @@ namespace CursorPackSupport
 	}
 }
 
+// Public forwards, so tool packs in other modules (the Niagara pack) create assets under the same rules.
+namespace CursorToolHelpers
+{
+	bool IsWritableContentPath(const FString& PackagePath, FString& OutError)
+	{
+		return CursorPackSupport::IsWritableContentPath(PackagePath, OutError);
+	}
+
+	bool PrepareNewAsset(const FString& AssetPath, UPackage*& OutPackage, FString& OutAssetName, FString& OutError)
+	{
+		return CursorPackSupport::PrepareNewAsset(AssetPath, OutPackage, OutAssetName, OutError);
+	}
+
+	void FinishNewAsset(UObject* Asset)
+	{
+		CursorPackSupport::FinishNewAsset(Asset);
+	}
+}
+
 namespace CursorSource
 {
 	namespace

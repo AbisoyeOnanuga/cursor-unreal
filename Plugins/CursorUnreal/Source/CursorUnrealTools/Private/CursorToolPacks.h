@@ -24,4 +24,16 @@ namespace CursorToolPacks
 	/** "materials": create materials and instances, build expression graphs, set parameters, compile. */
 	void RegisterMaterialPack();
 	void UnregisterMaterialPack();
+
+	/** "animation": create and inspect Animation Blueprints (graphs, nodes, compile). */
+	void RegisterAnimBlueprintPack();
+	void UnregisterAnimBlueprintPack();
+
+	/** "audio": SoundCue create/inspect/play, attenuation assets, ambient spawn. */
+	void RegisterSoundPack();
+	void UnregisterSoundPack();
+
+	/** "optimisation": read-only mesh/actor cost estimates and LOD suggestions. */
+	void RegisterOptimisationPack();
+	void UnregisterOptimisationPack();
 }

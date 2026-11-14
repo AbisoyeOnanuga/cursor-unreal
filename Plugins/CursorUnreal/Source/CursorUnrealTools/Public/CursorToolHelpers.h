@@ -5,6 +5,8 @@
 #include "Dom/JsonValue.h"
 
 class AActor;
+class UObject;
+class UPackage;
 class UWorld;
 
 /**
@@ -55,4 +57,16 @@ namespace CursorToolHelpers
 	 * supported (address the component itself instead).
 	 */
 	CURSORUNREALTOOLS_API bool WriteProperty(UObject* Object, const FString& PropertyPath, const TSharedPtr<FJsonValue>& Value, FString& OutError);
+
+	/** Only project and plugin content may be changed: engine content is shared by every project on the machine. */
+	CURSORUNREALTOOLS_API bool IsWritableContentPath(const FString& PackagePath, FString& OutError);
+
+	/**
+	 * Validates the path of an asset a tool is about to create and makes its (new, empty) package.
+	 * Fails when the path is not project content, is not a valid long package name, or already holds an asset.
+	 */
+	CURSORUNREALTOOLS_API bool PrepareNewAsset(const FString& AssetPath, UPackage*& OutPackage, FString& OutAssetName, FString& OutError);
+
+	/** Tells the asset registry about a freshly created asset and marks its package dirty so asset_save picks it up. */
+	CURSORUNREALTOOLS_API void FinishNewAsset(UObject* Asset);
 }

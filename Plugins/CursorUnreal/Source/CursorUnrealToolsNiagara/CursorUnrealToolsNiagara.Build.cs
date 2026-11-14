@@ -18,7 +18,13 @@ public class CursorUnrealToolsNiagara : ModuleRules
 			"Engine",
 			"Json",
 			"UnrealEd",
+			"AssetRegistry",
+			"Slate",
+			"SlateCore",
+			// Asset creation rules and path resolution shared with the other packs.
+			"CursorUnrealTools",
 			"Niagara",
+			"NiagaraCore",
 			"NiagaraEditor"
 		});
 	}

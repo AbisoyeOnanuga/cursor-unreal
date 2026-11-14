@@ -43,7 +43,8 @@ namespace
 {
 	const TCHAR* BlueprintPack = TEXT("blueprint");
 
-	TSharedPtr<FJsonValue> AsValue(const TSharedRef<FJsonObject>& Object)
+	// Named uniquely so a unity build that also compiles MaterialTools.cpp does not collide on AsValue.
+	TSharedPtr<FJsonValue> BlueprintJson(const TSharedRef<FJsonObject>& Object)
 	{
 		return MakeShared<FJsonValueObject>(Object);
 	}
@@ -304,7 +305,7 @@ namespace
 			{
 				if (!Pin->bHidden)
 				{
-					Pins.Add(AsValue(DescribePin(Pin)));
+					Pins.Add(BlueprintJson(DescribePin(Pin)));
 				}
 			}
 			Out->SetArrayField(TEXT("pins"), Pins);
@@ -350,7 +351,7 @@ namespace
 			Item->SetStringField(TEXT("name"), Graph->GetName());
 			Item->SetStringField(TEXT("kind"), GraphKind(Blueprint, Graph));
 			Item->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
-			Out.Add(AsValue(Item));
+			Out.Add(BlueprintJson(Item));
 		}
 		return Out;
 	}
@@ -443,7 +444,7 @@ void CursorToolPacks::RegisterBlueprintPack()
 					Item->SetStringField(TEXT("default"), Var.DefaultValue);
 				}
 				Item->SetBoolField(TEXT("instance_editable"), (Var.PropertyFlags & CPF_DisableEditOnInstance) == 0);
-				Variables.Add(AsValue(Item));
+				Variables.Add(BlueprintJson(Item));
 			}
 			Out->SetArrayField(TEXT("variables"), Variables);
 
@@ -459,7 +460,7 @@ void CursorToolPacks::RegisterBlueprintPack()
 					{
 						Item->SetStringField(TEXT("parent"), ParentNode->GetVariableName().ToString());
 					}
-					Components.Add(AsValue(Item));
+					Components.Add(BlueprintJson(Item));
 				}
 			}
 			Out->SetArrayField(TEXT("components"), Components);
@@ -517,7 +518,7 @@ void CursorToolPacks::RegisterBlueprintPack()
 			{
 				if (Node && Nodes.Num() < Max)
 				{
-					Nodes.Add(AsValue(DescribeNode(Node, bPins)));
+					Nodes.Add(BlueprintJson(DescribeNode(Node, bPins)));
 				}
 			}
 			TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
@@ -696,7 +697,7 @@ void CursorToolPacks::RegisterBlueprintPack()
 			TArray<TSharedPtr<FJsonValue>> Nodes;
 			for (const UEdGraphNode* Node : Graph->Nodes)
 			{
-				Nodes.Add(AsValue(DescribeNode(Node, true)));
+				Nodes.Add(BlueprintJson(DescribeNode(Node, true)));
 			}
 			Out->SetArrayField(TEXT("nodes"), Nodes);
 			return FCursorToolResult::OkJson(Out);

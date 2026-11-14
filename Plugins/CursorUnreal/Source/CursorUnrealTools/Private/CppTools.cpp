@@ -410,10 +410,6 @@ void CursorToolPacks::RegisterCppPack()
 			{
 				return FCursorToolResult::Error(FString::Printf(TEXT("%s is a Blueprint class. A C++ class must derive from a native class; use blueprint_create to derive from a Blueprint."), *Parent->GetName()));
 			}
-			if (Parent->HasAnyClassFlags(CLASS_Final))
-			{
-				return FCursorToolResult::Error(FString::Printf(TEXT("%s is final and cannot be derived from."), *Parent->GetName()));
-			}
 			const FString ParentInclude = IncludeForClass(Parent);
 			if (ParentInclude.IsEmpty())
 			{
@@ -700,6 +696,11 @@ void CursorToolPacks::RegisterCppPack()
 
 			TArray<FString> Lines;
 			Text.ParseIntoArrayLines(Lines, /*bCullEmpty*/ false);
+			// A file ending in a newline has no extra empty last line; counting one would make every line count off by one.
+			if (Lines.Num() > 0 && Lines.Last().IsEmpty() && (Text.EndsWith(TEXT("\n")) || Text.EndsWith(TEXT("\r"))))
+			{
+				Lines.Pop();
+			}
 			const int32 Total = Lines.Num();
 			const int32 Start = FMath::Max(1, Args.Int(TEXT("start_line"), 1));
 			const int32 Max = FMath::Clamp(Args.Int(TEXT("max_lines"), 400), 1, 2000);

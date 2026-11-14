@@ -34,7 +34,8 @@ namespace
 {
 	const TCHAR* MaterialPack = TEXT("materials");
 
-	TSharedPtr<FJsonValue> AsValue(const TSharedRef<FJsonObject>& Object)
+	// Named uniquely so a unity build that also compiles BlueprintTools.cpp does not collide on AsValue.
+	TSharedPtr<FJsonValue> MaterialJson(const TSharedRef<FJsonObject>& Object)
 	{
 		return MakeShared<FJsonValueObject>(Object);
 	}
@@ -276,7 +277,7 @@ namespace
 				Item->SetStringField(TEXT("from"), Input->Expression->GetName());
 				Item->SetNumberField(TEXT("from_output_index"), Input->OutputIndex);
 			}
-			Inputs.Add(AsValue(Item));
+			Inputs.Add(MaterialJson(Item));
 		}
 		Out->SetArrayField(TEXT("inputs"), Inputs);
 
@@ -321,7 +322,7 @@ namespace
 		{
 			return true;
 		}
-		FLinearColor Color;
+		FLinearColor Color = FLinearColor::Black;
 		double Number = 0.0;
 		if (UMaterialExpressionScalarParameter* Scalar = Cast<UMaterialExpressionScalarParameter>(Expression))
 		{
@@ -498,7 +499,7 @@ void CursorToolPacks::RegisterMaterialPack()
 				{
 					if (Expression)
 					{
-						Expressions.Add(AsValue(DescribeExpression(Expression)));
+						Expressions.Add(MaterialJson(DescribeExpression(Expression)));
 					}
 				}
 				Out->SetArrayField(TEXT("expressions"), Expressions);
@@ -754,7 +755,7 @@ void CursorToolPacks::RegisterMaterialPack()
 			}
 
 			double Number = 0.0;
-			FLinearColor Color;
+			FLinearColor Color = FLinearColor::Black;
 			UTexture* Texture = nullptr;
 			TArray<FName> Existing;
 			if (Type == TEXT("scalar"))
@@ -794,15 +795,23 @@ void CursorToolPacks::RegisterMaterialPack()
 
 			if (UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(Interface))
 			{
+				// Prefer the EditorOnly setters: UMaterialEditingLibrary's Set* helpers can return false on
+				// 5.6 even when the override is valid (for example right after creating the instance).
 				Instance->Modify();
-				bool bSet = false;
-				if (Type == TEXT("scalar")) { bSet = UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(Instance, ParameterName, static_cast<float>(Number)); }
-				else if (Type == TEXT("vector")) { bSet = UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(Instance, ParameterName, Color); }
-				else { bSet = UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(Instance, ParameterName, Texture); }
-				if (!bSet)
+				const FMaterialParameterInfo Info(ParameterName);
+				if (Type == TEXT("scalar"))
 				{
-					return FCursorToolResult::Error(TEXT("The editor refused to set the parameter."));
+					Instance->SetScalarParameterValueEditorOnly(Info, static_cast<float>(Number));
 				}
+				else if (Type == TEXT("vector"))
+				{
+					Instance->SetVectorParameterValueEditorOnly(Info, Color);
+				}
+				else
+				{
+					Instance->SetTextureParameterValueEditorOnly(Info, Texture);
+				}
+				UMaterialEditingLibrary::UpdateMaterialInstance(Instance);
 				Instance->MarkPackageDirty();
 				return FCursorToolResult::Ok(FString::Printf(TEXT("Set %s parameter '%s' on %s."), *Type, *ParameterName.ToString(), *Instance->GetName()));
 			}
