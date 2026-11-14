@@ -1,0 +1,33 @@
+# Unreal build output
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+Packaged/
+
+# IDE and project files
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.VC.db
+*.opensdf
+*.sdf
+*.xcworkspace
+*.xcodeproj
+
+# Node bridge
+node_modules/
+npm-debug.log*
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Never commit secrets
+.env
+.env.*

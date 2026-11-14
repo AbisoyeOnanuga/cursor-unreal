@@ -1,0 +1,17 @@
+{
+  "name": "cursor-unreal-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sidecar that lets the CursorUnreal editor plugin run Cursor agents through @cursor/sdk.",
+  "type": "module",
+  "main": "bridge.mjs",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@cursor/sdk": "1.3.1"
+  }
+}

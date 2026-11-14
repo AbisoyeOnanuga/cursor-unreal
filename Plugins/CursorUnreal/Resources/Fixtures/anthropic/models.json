@@ -1,0 +1,82 @@
+{
+  "data": [
+    {
+      "type": "model",
+      "id": "claude-fixture-1",
+      "display_name": "Claude Fixture 1",
+      "line": "fable",
+      "lifecycle": "active",
+      "created_at": "2026-01-01T00:00:00Z",
+      "deprecated_at": null,
+      "retires_at": null,
+      "max_input_tokens": 1000000,
+      "max_tokens": 20000,
+      "capabilities": {
+        "effort": {
+          "supported": true,
+          "low": { "supported": true },
+          "medium": { "supported": true },
+          "high": { "supported": true },
+          "xhigh": { "supported": true },
+          "max": { "supported": true }
+        },
+        "thinking": {
+          "supported": true,
+          "types": {
+            "adaptive": { "supported": true },
+            "between_tools": { "supported": false },
+            "disabled": { "supported": false },
+            "enabled": { "supported": false }
+          }
+        }
+      }
+    },
+    {
+      "type": "model",
+      "id": "claude-fixture-small",
+      "display_name": "Claude Fixture Small",
+      "line": "haiku",
+      "lifecycle": "deprecated",
+      "created_at": "2025-01-01T00:00:00Z",
+      "deprecated_at": "2026-06-01T00:00:00Z",
+      "retires_at": null,
+      "max_input_tokens": 200000,
+      "max_tokens": 64000,
+      "capabilities": {
+        "effort": {
+          "supported": false,
+          "low": { "supported": false },
+          "medium": { "supported": false },
+          "high": { "supported": false },
+          "xhigh": null,
+          "max": { "supported": false }
+        },
+        "thinking": {
+          "supported": true,
+          "types": {
+            "adaptive": { "supported": false },
+            "between_tools": { "supported": false },
+            "disabled": { "supported": true },
+            "enabled": { "supported": true }
+          }
+        }
+      }
+    },
+    {
+      "type": "model",
+      "id": "claude-fixture-retired",
+      "display_name": "Claude Fixture Retired",
+      "line": null,
+      "lifecycle": "retired",
+      "created_at": "2024-01-01T00:00:00Z",
+      "deprecated_at": "2025-01-01T00:00:00Z",
+      "retires_at": "2025-06-01T00:00:00Z",
+      "max_input_tokens": 200000,
+      "max_tokens": 4096,
+      "capabilities": null
+    }
+  ],
+  "first_id": "claude-fixture-1",
+  "has_more": false,
+  "last_id": "claude-fixture-retired"
+}
