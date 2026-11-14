@@ -42,7 +42,7 @@ namespace
 	constexpr int32 DefaultHeight = 720;
 	constexpr int32 MinEdge = 256;
 	/** Frames rendered before the picture is read back, so exposure, global illumination and anti-aliasing settle. */
-	constexpr int32 SettleFrames = 60; // TEMP-EXPERIMENT
+	constexpr int32 SettleFrames = 12;
 	/** Longest the tool waits for shaders and textures that are still being prepared. */
 	constexpr double MaxWaitSeconds = 20.0;
 	/** Actors larger than this are left out when choosing what to frame: sky domes, backdrops. */

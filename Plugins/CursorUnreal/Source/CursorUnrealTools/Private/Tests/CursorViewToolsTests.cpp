@@ -110,23 +110,6 @@ bool FCursorViewScreenshotTest::RunTest(const FString&)
 	// level the tests run in. A level that has its own is left with its own: two suns would only wash the pictures out.
 	const bool bLevelHasSun = TActorIterator<ADirectionalLight>(CursorToolHelpers::GetEditorWorld()) ? true : false;
 	UE_LOG(LogCursorUnreal, Display, TEXT("[shot] the level %s"), bLevelHasSun ? TEXT("has its own sun") : TEXT("has no sun; the test adds one"));
-	// TEMP-EXPERIMENT-BEGIN
-	for (TActorIterator<ASkyLight> It(CursorToolHelpers::GetEditorWorld()); It; ++It)
-	{
-		const USkyLightComponent* C = It->GetLightComponent();
-		UE_LOG(LogCursorUnreal, Display, TEXT("[shot] skylight %s realtime=%d mobility=%d intensity=%.2f source=%d visible=%d"), *It->GetName(), C->bRealTimeCapture ? 1 : 0, (int32)C->Mobility.GetValue(), C->Intensity, (int32)C->SourceType.GetValue(), C->IsVisible() ? 1 : 0);
-	}
-	for (TActorIterator<ADirectionalLight> It(CursorToolHelpers::GetEditorWorld()); It; ++It)
-	{
-		const ULightComponent* C = It->GetLightComponent();
-		UE_LOG(LogCursorUnreal, Display, TEXT("[shot] sun %s mobility=%d intensity=%.2f rot=%s shadows=%d"), *It->GetName(), (int32)C->Mobility.GetValue(), C->Intensity, *It->GetActorRotation().ToCompactString(), C->CastShadows ? 1 : 0);
-	}
-	for (const TCHAR* Name : { TEXT("r.DynamicGlobalIlluminationMethod"), TEXT("r.ReflectionMethod"), TEXT("r.GenerateMeshDistanceFields"), TEXT("r.SkyLight.RealTimeReflectionCapture"), TEXT("r.Shadow.Virtual.Enable"), TEXT("r.DefaultFeature.AutoExposure") })
-	{
-		const IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(Name);
-		UE_LOG(LogCursorUnreal, Display, TEXT("[shot] cvar %s = %s"), Name, Var ? *Var->GetString() : TEXT("?"));
-	}
-	// TEMP-EXPERIMENT-END
 	const FString Sun = UniqueName(TEXT("ShotSun"));
 	const FString Sky = UniqueName(TEXT("ShotSky"));
 	const FString SkyLight = UniqueName(TEXT("ShotSkyLight"));
