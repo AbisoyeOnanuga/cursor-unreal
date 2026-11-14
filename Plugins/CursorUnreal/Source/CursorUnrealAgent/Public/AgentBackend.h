@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CursorImage.h"
 
 /** Token counts for one user turn, summed over every model round trip it took. */
 struct FAgentUsage
@@ -50,6 +51,8 @@ struct FAgentEvent
 	bool bIsError = false;
 	FAgentUsage Usage;
 	FString Outcome;
+	/** ToolCallFinished only: pictures the tool returned, as they were sent to the model. */
+	TArray<FCursorImage> Images;
 
 	static FAgentEvent Make(EAgentEventType InType, const FString& InText = FString())
 	{
@@ -93,7 +96,34 @@ struct FAgentTurnRequest
 {
 	FString Text;
 	TArray<FAgentContextBlock> Context;
+	/** Pictures attached to the message: reference art, a sketch, a screenshot. At most CursorImages::MaxPerMessage. */
+	TArray<FCursorImage> Images;
 };
+
+namespace CursorAgent
+{
+	/**
+	 * Pictures cost tokens every time the conversation is sent again, so a conversation keeps only
+	 * the newest few. When it holds more than MaxImagesInHistory, the oldest are dropped until
+	 * KeepImagesInHistory remain. Dropping in steps rather than one at a time keeps the prompt
+	 * cache useful in between.
+	 */
+	constexpr int32 MaxImagesInHistory = 10;
+	constexpr int32 KeepImagesInHistory = 5;
+	/** Most pictures tools may return to the model in one turn. Later ones are described in text instead. */
+	constexpr int32 MaxToolImagesPerTurn = 12;
+
+	/** Empty when the pictures can go with one message, otherwise why not: too many, too large, or unreadable. */
+	CURSORUNREALAGENT_API FString CheckMessageImages(const TArray<FCursorImage>& Images);
+	/** The line that introduces picture Index (from zero) of Count in a user message, so the model can tell them apart. */
+	CURSORUNREALAGENT_API FString DescribeAttachedImage(const FCursorImage& Image, int32 Index, int32 Count);
+	/**
+	 * The pictures of a tool result that may still go to the model this turn. Counts them in
+	 * InOutSentThisTurn. When some are held back, says so at the end of InOutText, so the model
+	 * knows it did not get them.
+	 */
+	CURSORUNREALAGENT_API TArray<FCursorImage> TakeToolImages(const TArray<FCursorImage>& Images, int32& InOutSentThisTurn, FString& InOutText);
+}
 
 /**
  * A way of running an agent: a model provider plus whatever drives its tool loop. Each backend

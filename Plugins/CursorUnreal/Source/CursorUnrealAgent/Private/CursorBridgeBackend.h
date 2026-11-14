@@ -69,6 +69,8 @@ private:
 	void RunEditorTool(const FString& CallId, const FString& Name, const TSharedPtr<FJsonObject>& Args, double SentAtMs);
 	TArray<TSharedPtr<FJsonValue>> DescribeTools() const;
 	FString BuildUserText(const FAgentTurnRequest& Request) const;
+	/** The "send" message for the turn that is starting, pictures included. */
+	TSharedRef<FJsonObject> BuildSendMessage(const FAgentTurnRequest& Request) const;
 	FString NextTurnId();
 	FString NextModelsId();
 
@@ -97,6 +99,9 @@ private:
 	FString ActiveTurnId;
 	FString LastUserText;
 	TArray<FAgentContextBlock> LastContext;
+	TArray<FCursorImage> LastImages;
+	/** Pictures tools have returned to the model this turn. */
+	int32 ToolImagesThisTurn = 0;
 	bool bCanRetry = false;
 	bool bCancelRequested = false;
 	FAgentUsage TurnUsage;

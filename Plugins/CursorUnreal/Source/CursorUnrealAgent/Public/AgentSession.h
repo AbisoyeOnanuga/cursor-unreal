@@ -26,12 +26,22 @@ enum class EAgentToolState : uint8
 	NotRun
 };
 
+/** A picture that goes with a chat entry: one the user attached, or one a tool returned. */
+struct FAgentItemImage
+{
+	FCursorImage Image;
+	/** The copy under Saved/CursorUnreal/Attachments. Empty when transcripts are off: the picture is then only in memory, until the chat is cleared. */
+	FString File;
+};
+
 /** One entry in the chat: a message, a block of thinking, a tool call or a notice. */
 struct FAgentItem
 {
 	EAgentItemKind Kind = EAgentItemKind::Notice;
 	FString Text;
 	FDateTime Time;
+	/** User messages: what was attached. Tool calls: what the tool showed the model. */
+	TArray<FAgentItemImage> Images;
 
 	// Tool calls only.
 	FString ToolCallId;
@@ -61,6 +71,8 @@ public:
 
 	/** Starts a turn. Returns false, with the reason, when it cannot start; nothing is added to the chat in that case. */
 	bool Send(const FString& Text, const TArray<FAgentContextBlock>& Context, FText& OutWhyNot);
+	/** The same, with pictures attached. The text may be empty when there is at least one picture. */
+	bool Send(const FAgentTurnRequest& Request, FText& OutWhyNot);
 	bool CanRetry() const;
 	bool Retry(FText& OutWhyNot);
 	void Stop();
@@ -100,6 +112,8 @@ private:
 	TSharedPtr<FAgentItem> FindTool(const FString& CallId) const;
 	void NoteFirstOutput();
 	void WriteTranscript(const FString& Outcome);
+	/** Attaches pictures to a chat entry, saving a copy of each when this chat is being saved. */
+	void AttachImages(FAgentItem& Item, const TArray<FCursorImage>& Images) const;
 
 	TSharedRef<IAgentBackend> Backend;
 	TArray<TSharedRef<FAgentItem>> Items;

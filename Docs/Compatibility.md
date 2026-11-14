@@ -4,7 +4,7 @@ Built and exercised on the versions below. Other 5.x releases may work; treat th
 
 | Engine | Host project association | Editor build | Plugin package (`Build-Plugin.ps1 -Mode Package`) | Notes |
 |--------|--------------------------|--------------|---------------------------------------------------|--------|
-| **5.6.1** | yes (`CursorUnrealDev.uproject`) | yes (2026-11-14) | yes → `Packaged/5.6.1/CursorUnreal/` (includes `Skills/`, `Bridge/` sans `node_modules`) | Primary target. MSVC 14.50. Automation: 39/39 `CursorUnreal` tests pass. |
+| **5.6.1** | yes (`CursorUnrealDev.uproject`) | yes (2026-11-14) | yes → `Packaged/5.6.1/CursorUnreal/` (includes `Skills/`, `Bridge/` sans `node_modules`) | Primary target. MSVC 14.50. Automation: 42/42 `CursorUnreal` tests pass. |
 | 5.5.x | not associated | not run | not run | HTTP stream delegate shim exists (`CURSORUNREAL_HAS_HTTP_STREAM_DELEGATE_V2`). |
 | 5.7.x | not associated | not run | not run | Pass `-EngineRoot` to `Build-Plugin.ps1` when installed. |
 

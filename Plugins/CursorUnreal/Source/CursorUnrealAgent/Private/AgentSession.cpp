@@ -69,15 +69,36 @@ FAgentEventSink FAgentSession::MakeSink()
 
 bool FAgentSession::Send(const FString& Text, const TArray<FAgentContextBlock>& Context, FText& OutWhyNot)
 {
+	FAgentTurnRequest Request;
+	Request.Text = Text;
+	Request.Context = Context;
+	return Send(Request, OutWhyNot);
+}
+
+bool FAgentSession::Send(const FAgentTurnRequest& InRequest, FText& OutWhyNot)
+{
 	check(IsInGameThread());
 	if (bBusy)
 	{
 		OutWhyNot = FText::FromString(TEXT("Wait for the current reply to finish, or stop it."));
 		return false;
 	}
-	if (Text.TrimStartAndEnd().IsEmpty())
+	FAgentTurnRequest Request = InRequest;
+	Request.Text.TrimStartAndEndInline();
+	if (Request.Text.IsEmpty())
 	{
-		OutWhyNot = FText::FromString(TEXT("Type a message first."));
+		if (Request.Images.Num() == 0)
+		{
+			OutWhyNot = FText::FromString(TEXT("Type a message first."));
+			return false;
+		}
+		// A picture sent on its own still needs words to go with it.
+		Request.Text = Request.Images.Num() == 1 ? TEXT("Look at the attached picture.") : TEXT("Look at the attached pictures.");
+	}
+	const FString ImageProblem = CursorAgent::CheckMessageImages(Request.Images);
+	if (!ImageProblem.IsEmpty())
+	{
+		OutWhyNot = FText::FromString(ImageProblem);
 		return false;
 	}
 	if (!Backend->CheckReady(OutWhyNot))
@@ -85,14 +106,32 @@ bool FAgentSession::Send(const FString& Text, const TArray<FAgentContextBlock>& 
 		return false;
 	}
 
-	AddItem(EAgentItemKind::User, Text.TrimStartAndEnd());
+	const TSharedRef<FAgentItem> Item = AddItem(EAgentItemKind::User, Request.Text);
+	if (Request.Images.Num() > 0)
+	{
+		AttachImages(Item.Get(), Request.Images);
+		OnItemChanged.Broadcast(Item);
+	}
 	BeginTurn();
-
-	FAgentTurnRequest Request;
-	Request.Text = Text;
-	Request.Context = Context;
 	Backend->SendTurn(Request, MakeSink());
 	return true;
+}
+
+void FAgentSession::AttachImages(FAgentItem& Item, const TArray<FCursorImage>& Images) const
+{
+	const bool bSave = bWriteToDisk && UCursorUnrealSettings::Get()->bSaveTranscripts;
+	for (const FCursorImage& Image : Images)
+	{
+		if (Image.IsValid())
+		{
+			FAgentItemImage& Added = Item.Images.AddDefaulted_GetRef();
+			Added.Image = Image;
+			if (bSave)
+			{
+				Added.File = CursorImages::SaveAttachment(Image);
+			}
+		}
+	}
 }
 
 bool FAgentSession::CanRetry() const
@@ -306,6 +345,7 @@ void FAgentSession::HandleEvent(const FAgentEvent& Event)
 		Item->Text = CursorJson::Truncate(CursorRedactor::Redact(Event.Text), MaxShownResultChars);
 		Item->bIsError = Event.bIsError;
 		Item->ToolState = bRan ? EAgentToolState::Finished : EAgentToolState::NotRun;
+		AttachImages(*Item, Event.Images);
 		if (bRan)
 		{
 			Item->ToolMs = (FPlatformTime::Seconds() - ToolStartSeconds) * 1000.0;
@@ -384,6 +424,27 @@ void FAgentSession::WriteTranscript(const FString& Outcome)
 			Json->SetStringField(TEXT("args"), CursorRedactor::Redact(Item.ArgsJson));
 			Json->SetBoolField(TEXT("is_error"), Item.bIsError);
 			Json->SetBoolField(TEXT("ran"), Item.ToolState == EAgentToolState::Finished);
+		}
+		if (Item.Images.Num() > 0)
+		{
+			// The pictures themselves are files next door. The transcript records which ones, so it stays small and readable.
+			TArray<TSharedPtr<FJsonValue>> Images;
+			for (const FAgentItemImage& Attached : Item.Images)
+			{
+				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+				Entry->SetStringField(TEXT("name"), Attached.Image.Name);
+				Entry->SetStringField(TEXT("type"), Attached.Image.MimeType);
+				Entry->SetNumberField(TEXT("width"), Attached.Image.Width);
+				Entry->SetNumberField(TEXT("height"), Attached.Image.Height);
+				Entry->SetNumberField(TEXT("bytes"), static_cast<double>(Attached.Image.NumBytes()));
+				Entry->SetStringField(TEXT("sha1"), Attached.Image.Hash());
+				if (!Attached.File.IsEmpty())
+				{
+					Entry->SetStringField(TEXT("file"), FPaths::GetCleanFilename(Attached.File));
+				}
+				Images.Add(MakeShared<FJsonValueObject>(Entry));
+			}
+			Json->SetArrayField(TEXT("images"), Images);
 		}
 		Lines += CursorJson::ToString(Json) + TEXT("\n");
 	}

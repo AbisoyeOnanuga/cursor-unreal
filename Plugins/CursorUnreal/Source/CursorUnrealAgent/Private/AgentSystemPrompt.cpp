@@ -1,5 +1,7 @@
 #include "AgentSystemPrompt.h"
 
+#include "AgentBackend.h"
+
 #include "CursorSkillLibrary.h"
 #include "CursorUnrealSettings.h"
 #include "Misc/App.h"
@@ -58,4 +60,62 @@ FString CursorAgent::BuildSystemPrompt()
 		Prompt += TEXT("\n");
 	}
 	return Prompt;
+}
+
+FString CursorAgent::CheckMessageImages(const TArray<FCursorImage>& Images)
+{
+	if (Images.Num() > CursorImages::MaxPerMessage)
+	{
+		return FString::Printf(TEXT("A message can carry at most %d pictures. This one has %d."), CursorImages::MaxPerMessage, Images.Num());
+	}
+	int64 Total = 0;
+	for (const FCursorImage& Image : Images)
+	{
+		if (!Image.IsValid())
+		{
+			return TEXT("One of the attached pictures is empty.");
+		}
+		if (Image.MimeType != TEXT("image/png") && Image.MimeType != TEXT("image/jpeg"))
+		{
+			return FString::Printf(TEXT("'%s' is not a PNG or JPEG."), *Image.Name);
+		}
+		Total += Image.NumBytes();
+	}
+	if (Total > CursorImages::MaxMessageBytes)
+	{
+		return FString::Printf(TEXT("The attached pictures come to %.1f MB. One message can carry %lld MB. Remove one or two."),
+			Total / (1024.0 * 1024.0), CursorImages::MaxMessageBytes / (1024 * 1024));
+	}
+	return FString();
+}
+
+FString CursorAgent::DescribeAttachedImage(const FCursorImage& Image, int32 Index, int32 Count)
+{
+	return FString::Printf(TEXT("Attached picture %d of %d (%s, %d x %d pixels):"), Index + 1, Count, Image.Name.IsEmpty() ? TEXT("unnamed") : *Image.Name, Image.Width, Image.Height);
+}
+
+TArray<FCursorImage> CursorAgent::TakeToolImages(const TArray<FCursorImage>& Images, int32& InOutSentThisTurn, FString& InOutText)
+{
+	TArray<FCursorImage> Out;
+	int32 HeldBack = 0;
+	for (const FCursorImage& Image : Images)
+	{
+		if (!Image.IsValid())
+		{
+			continue;
+		}
+		if (InOutSentThisTurn >= MaxToolImagesPerTurn)
+		{
+			++HeldBack;
+			continue;
+		}
+		++InOutSentThisTurn;
+		Out.Add(Image);
+	}
+	if (HeldBack > 0)
+	{
+		InOutText += FString::Printf(TEXT("\n(%d picture%s not shown to you: this turn has reached its limit of %d pictures. Work from the ones you have, or continue in the next message.)"),
+			HeldBack, HeldBack == 1 ? TEXT("") : TEXT("s"), MaxToolImagesPerTurn);
+	}
+	return Out;
 }

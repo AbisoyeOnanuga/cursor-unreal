@@ -95,6 +95,62 @@ namespace
 		return MakeShared<FJsonValueObject>(Block);
 	}
 
+	TSharedRef<FJsonValueObject> ImageBlock(const FCursorImage& Image)
+	{
+		TSharedRef<FJsonObject> Source = MakeShared<FJsonObject>();
+		Source->SetStringField(TEXT("type"), TEXT("base64"));
+		Source->SetStringField(TEXT("media_type"), Image.MimeType);
+		Source->SetStringField(TEXT("data"), Image.ToBase64());
+		TSharedRef<FJsonObject> Block = MakeShared<FJsonObject>();
+		Block->SetStringField(TEXT("type"), TEXT("image"));
+		Block->SetObjectField(TEXT("source"), Source);
+		return MakeShared<FJsonValueObject>(Block);
+	}
+
+	bool IsImageBlock(const TSharedPtr<FJsonValue>& Block)
+	{
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		return Block.IsValid() && Block->TryGetObject(Object) && AgentJson::Str(*Object, TEXT("type")) == TEXT("image");
+	}
+
+	const TCHAR* RemovedImageText = TEXT("[A picture that was here has been dropped from the conversation to keep it small. Ask for it again, or take a new screenshot, if you need to see it.]");
+
+	/**
+	 * Calls Visit for every array of content blocks that can hold a picture: the content of each
+	 * user message, and the content of each tool result inside one. Visit may change the array.
+	 */
+	void ForEachImageHolder(const TArray<TSharedPtr<FJsonValue>>& History, TFunctionRef<void(TArray<TSharedPtr<FJsonValue>>&)> Visit)
+	{
+		for (const TSharedPtr<FJsonValue>& Message : History)
+		{
+			const TSharedPtr<FJsonObject>* MessageObject = nullptr;
+			if (!Message.IsValid() || !Message->TryGetObject(MessageObject) || AgentJson::Str(*MessageObject, TEXT("role")) != TEXT("user"))
+			{
+				continue;
+			}
+			const TArray<TSharedPtr<FJsonValue>>* Content = nullptr;
+			if (!(*MessageObject)->TryGetArrayField(TEXT("content"), Content))
+			{
+				continue;
+			}
+			TArray<TSharedPtr<FJsonValue>> Blocks = *Content;
+			for (const TSharedPtr<FJsonValue>& Block : Blocks)
+			{
+				const TSharedPtr<FJsonObject>* BlockObject = nullptr;
+				const TArray<TSharedPtr<FJsonValue>>* Inner = nullptr;
+				if (Block.IsValid() && Block->TryGetObject(BlockObject) && AgentJson::Str(*BlockObject, TEXT("type")) == TEXT("tool_result")
+					&& (*BlockObject)->TryGetArrayField(TEXT("content"), Inner))
+				{
+					TArray<TSharedPtr<FJsonValue>> InnerBlocks = *Inner;
+					Visit(InnerBlocks);
+					(*BlockObject)->SetArrayField(TEXT("content"), InnerBlocks);
+				}
+			}
+			Visit(Blocks);
+			(*MessageObject)->SetArrayField(TEXT("content"), Blocks);
+		}
+	}
+
 	/** The editor tools the in-editor agent may use, in the shape the Messages API takes. Sorted by name, so the order is stable. */
 	TArray<TSharedPtr<FJsonValue>> DescribeTools()
 	{
@@ -282,6 +338,44 @@ void FAnthropicBackend::AppendUserContent(const TArray<TSharedPtr<FJsonValue>>& 
 	History.Add(MakeShared<FJsonValueObject>(Message));
 }
 
+int32 FAnthropicBackend::NumHistoryImages() const
+{
+	int32 Count = 0;
+	ForEachImageHolder(History, [&Count](TArray<TSharedPtr<FJsonValue>>& Blocks)
+	{
+		for (const TSharedPtr<FJsonValue>& Block : Blocks)
+		{
+			Count += IsImageBlock(Block) ? 1 : 0;
+		}
+	});
+	return Count;
+}
+
+void FAnthropicBackend::PruneImages()
+{
+	const int32 Count = NumHistoryImages();
+	if (Count <= CursorAgent::MaxImagesInHistory)
+	{
+		return;
+	}
+	// Oldest first: the conversation is visited in order.
+	int32 ToDrop = Count - CursorAgent::KeepImagesInHistory;
+	const int32 Dropped = ToDrop;
+	ForEachImageHolder(History, [&ToDrop](TArray<TSharedPtr<FJsonValue>>& Blocks)
+	{
+		for (TSharedPtr<FJsonValue>& Block : Blocks)
+		{
+			if (ToDrop > 0 && IsImageBlock(Block))
+			{
+				Block = TextBlock(RemovedImageText);
+				--ToDrop;
+			}
+		}
+	});
+	EmitNotice(FString::Printf(TEXT("The %d oldest pictures were dropped from what the model is sent, to keep the conversation small. It still has the newest %d. Your saved copies are untouched."),
+		Dropped, CursorAgent::KeepImagesInHistory));
+}
+
 void FAnthropicBackend::SendTurn(const FAgentTurnRequest& Request, FAgentEventSink InSink)
 {
 	check(IsInGameThread());
@@ -303,9 +397,16 @@ void FAnthropicBackend::SendTurn(const FAgentTurnRequest& Request, FAgentEventSi
 		return;
 	}
 
+	const FString ImageProblem = CursorAgent::CheckMessageImages(Request.Images);
+	if (!ImageProblem.IsEmpty())
+	{
+		InSink(FAgentEvent::Make(EAgentEventType::Error, ImageProblem));
+		return;
+	}
+
 	StartConversationIfNeeded();
 
-	// Reference material first and the request last, which is where models attend to it best.
+	// Reference material and pictures first and the request last, which is where models attend to it best.
 	TArray<TSharedPtr<FJsonValue>> Blocks;
 	for (const FAgentContextBlock& Context : Request.Context)
 	{
@@ -313,6 +414,11 @@ void FAnthropicBackend::SendTurn(const FAgentTurnRequest& Request, FAgentEventSi
 		{
 			Blocks.Add(TextBlock(FString::Printf(TEXT("<context name=\"%s\">\n%s\n</context>"), *Context.Title, *Context.Text)));
 		}
+	}
+	for (int32 Index = 0; Index < Request.Images.Num(); ++Index)
+	{
+		Blocks.Add(TextBlock(CursorAgent::DescribeAttachedImage(Request.Images[Index], Index, Request.Images.Num())));
+		Blocks.Add(ImageBlock(Request.Images[Index]));
 	}
 	Blocks.Add(TextBlock(Text));
 	AppendUserContent(Blocks);
@@ -349,7 +455,9 @@ void FAnthropicBackend::BeginTurn(FAgentEventSink InSink)
 	Attempt = 0;
 	bCancelRequested = false;
 	TurnUsage = FAgentUsage();
+	ToolImagesThisTurn = 0;
 	OutcomeAfterTools = nullptr;
+	PruneImages();
 
 	if (!bWarnedToolsChanged && Fingerprint(DescribeTools()) != ToolsFingerprint)
 	{
@@ -760,21 +868,35 @@ void FAnthropicBackend::RunNextTool()
 			// A tool cannot be interrupted. If the conversation was reset while it ran, its result has nowhere to go.
 			if (Self.IsValid() && Self->Generation == ExpectedGeneration && Self->Phase == EPhase::RunningTools && Self->NextTool == Index)
 			{
-				Self->HandleToolResult(Index, Result.bIsError, Result.Text);
+				Self->HandleToolResult(Index, Result.bIsError, Result.Text, Result.Images);
 			}
 		});
 }
 
-void FAnthropicBackend::HandleToolResult(int32 Index, bool bIsError, const FString& Text)
+void FAnthropicBackend::HandleToolResult(int32 Index, bool bIsError, const FString& Text, const TArray<FCursorImage>& Images)
 {
 	const FAnthropicToolUse& Use = PendingTools[Index];
 	// The API does not accept an empty result.
-	const FString Content = Text.IsEmpty() ? TEXT("(no output)") : Text;
+	FString Content = Text.IsEmpty() ? TEXT("(no output)") : Text;
+	const TArray<FCursorImage> Sent = CursorAgent::TakeToolImages(Images, ToolImagesThisTurn, Content);
 
 	TSharedRef<FJsonObject> Block = MakeShared<FJsonObject>();
 	Block->SetStringField(TEXT("type"), TEXT("tool_result"));
 	Block->SetStringField(TEXT("tool_use_id"), Use.Id);
-	Block->SetStringField(TEXT("content"), Content);
+	if (Sent.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> Parts;
+		Parts.Add(TextBlock(Content));
+		for (const FCursorImage& Image : Sent)
+		{
+			Parts.Add(ImageBlock(Image));
+		}
+		Block->SetArrayField(TEXT("content"), Parts);
+	}
+	else
+	{
+		Block->SetStringField(TEXT("content"), Content);
+	}
 	if (bIsError)
 	{
 		Block->SetBoolField(TEXT("is_error"), true);
@@ -785,6 +907,7 @@ void FAnthropicBackend::HandleToolResult(int32 Index, bool bIsError, const FStri
 	Finished.ToolCallId = Use.Id;
 	Finished.ToolName = Use.Name;
 	Finished.bIsError = bIsError;
+	Finished.Images = Sent;
 	Emit(Finished);
 
 	++NextTool;
@@ -797,6 +920,7 @@ void FAnthropicBackend::FinishTools()
 	AppendUserContent(ToolResults);
 	ToolResults.Reset();
 	PendingTools.Reset();
+	PruneImages();
 
 	if (OutcomeAfterTools != nullptr)
 	{

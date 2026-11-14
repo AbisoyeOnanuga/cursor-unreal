@@ -10,6 +10,7 @@
 //   [[throw]]           send() itself throws, as it does when the run cannot start
 //   [[wait]]            the run keeps going until it is cancelled
 //   [[report]]          replies with the options the agent was created with (never the key)
+//   [[images]]          replies with what it was told about the pictures sent with the message
 //   anything else       a short thinking note and a two-part reply
 
 export const state = {
@@ -40,7 +41,12 @@ function checkKey(apiKey) {
   }
 }
 
-function createRun(agent, text, sendOptions) {
+function describePart(part) {
+  // Sizes only: a picture's bytes must never end up in a reply or a log.
+  return part.type === "image" ? `[image ${part.mimeType} ${part.data.length} base64 chars]` : part.text;
+}
+
+function createRun(agent, text, sendOptions, images = []) {
   const runId = `run-${state.sends.length}`;
   const base = { agent_id: agent.agentId, run_id: runId };
   const customTools = sendOptions?.local?.customTools ?? agent.options.local?.customTools ?? {};
@@ -69,7 +75,7 @@ function createRun(agent, text, sendOptions) {
         ? await tool.execute(args, { toolCallId: "sdk-call-1", sessionId: agent.agentId })
         : { content: [{ type: "text", text: `No tool named ${name}.` }], isError: true };
       yield { ...call, status: result.isError ? "error" : "completed", args: mcpArgs, result };
-      const shown = result.content.map((part) => part.text).join("");
+      const shown = result.content.map(describePart).join("");
       yield { ...base, type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `${result.isError ? "Tool failed" : "Tool said"}: ${shown}` }] } };
     } else if (text.includes("[[builtin]]")) {
       const call = { ...base, type: "tool_call", call_id: "sdk-call-2", name: "read", args: { path: "Source/Game.cpp" } };
@@ -85,6 +91,13 @@ function createRun(agent, text, sendOptions) {
       yield { ...base, type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Waiting." }] } };
       await cancelled;
       return;
+    } else if (text.includes("[[images]]")) {
+      const report = images.map((image) => ({
+        mimeType: image.mimeType,
+        base64Chars: typeof image.data === "string" ? image.data.length : 0,
+        dimension: image.dimension ?? null,
+      }));
+      yield { ...base, type: "assistant", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(report) }] } };
     } else if (text.includes("[[report]]")) {
       const options = agent.options;
       const report = {
@@ -151,11 +164,12 @@ export const Agent = {
       model: options.model,
       async send(message, sendOptions) {
         const text = typeof message === "string" ? message : message.text;
-        state.sends.push({ agentId: agent.agentId, text, model: sendOptions?.model });
+        const images = typeof message === "string" ? [] : (message.images ?? []);
+        state.sends.push({ agentId: agent.agentId, text, model: sendOptions?.model, images: images.length });
         if (text.includes("[[throw]]")) {
           throw sdkError("The stand-in refused to start the run.", "unavailable", true);
         }
-        return createRun(agent, text, sendOptions);
+        return createRun(agent, text, sendOptions, images);
       },
       close() {
         state.disposed += 1;

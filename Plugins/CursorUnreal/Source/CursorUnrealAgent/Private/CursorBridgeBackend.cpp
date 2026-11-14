@@ -303,8 +303,51 @@ FString FCursorBridgeBackend::BuildUserText(const FAgentTurnRequest& Request) co
 			Text += FString::Printf(TEXT("<context name=\"%s\">\n%s\n</context>\n\n"), *Context.Title, *Context.Text);
 		}
 	}
+	for (int32 Index = 0; Index < Request.Images.Num(); ++Index)
+	{
+		// The pictures themselves travel beside the text; this tells the model what each one is.
+		Text += CursorAgent::DescribeAttachedImage(Request.Images[Index], Index, Request.Images.Num()).LeftChop(1) + TEXT(".\n");
+	}
+	if (Request.Images.Num() > 0)
+	{
+		Text += TEXT("\n");
+	}
 	Text += Request.Text.TrimStartAndEnd();
 	return Text;
+}
+
+namespace
+{
+	TArray<TSharedPtr<FJsonValue>> ImagesToJson(const TArray<FCursorImage>& Images)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		for (const FCursorImage& Image : Images)
+		{
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("data"), Image.ToBase64());
+			Entry->SetStringField(TEXT("mimeType"), Image.MimeType);
+			Entry->SetNumberField(TEXT("width"), Image.Width);
+			Entry->SetNumberField(TEXT("height"), Image.Height);
+			Out.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		return Out;
+	}
+}
+
+TSharedRef<FJsonObject> FCursorBridgeBackend::BuildSendMessage(const FAgentTurnRequest& Request) const
+{
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("type"), TEXT("send"));
+	Message->SetStringField(TEXT("id"), ActiveTurnId);
+	Message->SetStringField(TEXT("text"), BuildUserText(Request));
+	if (Request.Images.Num() > 0)
+	{
+		Message->SetArrayField(TEXT("images"), ImagesToJson(Request.Images));
+	}
+	TSharedRef<FJsonObject> Model = MakeShared<FJsonObject>();
+	Model->SetStringField(TEXT("id"), GetModelId());
+	Message->SetObjectField(TEXT("model"), Model);
+	return Message;
 }
 
 FString FCursorBridgeBackend::NextTurnId()
@@ -337,8 +380,16 @@ void FCursorBridgeBackend::SendTurn(const FAgentTurnRequest& Request, FAgentEven
 		return;
 	}
 
+	const FString ImageProblem = CursorAgent::CheckMessageImages(Request.Images);
+	if (!ImageProblem.IsEmpty())
+	{
+		InSink(FAgentEvent::Make(EAgentEventType::Error, ImageProblem));
+		return;
+	}
+
 	LastUserText = Request.Text.TrimStartAndEnd();
 	LastContext = Request.Context;
+	LastImages = Request.Images;
 	bCanRetry = false;
 
 	FString Error;
@@ -369,17 +420,9 @@ void FCursorBridgeBackend::SendTurn(const FAgentTurnRequest& Request, FAgentEven
 	}
 
 	ActiveTurnId = NextTurnId();
-	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
-	Message->SetStringField(TEXT("type"), TEXT("send"));
-	Message->SetStringField(TEXT("id"), ActiveTurnId);
-	Message->SetStringField(TEXT("text"), BuildUserText(Request));
-	TSharedRef<FJsonObject> Model = MakeShared<FJsonObject>();
-	Model->SetStringField(TEXT("id"), GetModelId());
-	Message->SetObjectField(TEXT("model"), Model);
-
 	Phase = EPhase::Requesting;
 	Emit(FAgentEvent::Make(EAgentEventType::RequestStarted));
-	if (!Process->WriteLine(CursorJson::ToString(Message)))
+	if (!Process->WriteLine(CursorJson::ToString(BuildSendMessage(Request))))
 	{
 		Fail(TEXT("Could not write to the Cursor bridge."));
 	}
@@ -400,6 +443,7 @@ void FCursorBridgeBackend::Retry(FAgentEventSink InSink)
 	FAgentTurnRequest Request;
 	Request.Text = LastUserText;
 	Request.Context = LastContext;
+	Request.Images = LastImages;
 	SendTurn(Request, MoveTemp(InSink));
 }
 
@@ -440,6 +484,7 @@ void FCursorBridgeBackend::ResetConversation()
 	SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 	LastUserText.Reset();
 	LastContext.Reset();
+	LastImages.Reset();
 	bCanRetry = false;
 	ActiveTurnId.Reset();
 	PendingToolCalls.Reset();
@@ -573,16 +618,10 @@ void FCursorBridgeBackend::HandleMessage(const TSharedPtr<FJsonObject>& Message)
 			FAgentTurnRequest Request;
 			Request.Text = LastUserText;
 			Request.Context = LastContext;
-			TSharedRef<FJsonObject> Send = MakeShared<FJsonObject>();
-			Send->SetStringField(TEXT("type"), TEXT("send"));
-			Send->SetStringField(TEXT("id"), ActiveTurnId);
-			Send->SetStringField(TEXT("text"), BuildUserText(Request));
-			TSharedRef<FJsonObject> Model = MakeShared<FJsonObject>();
-			Model->SetStringField(TEXT("id"), GetModelId());
-			Send->SetObjectField(TEXT("model"), Model);
+			Request.Images = LastImages;
 			Phase = EPhase::Requesting;
 			Emit(FAgentEvent::Make(EAgentEventType::RequestStarted));
-			if (!Process->WriteLine(CursorJson::ToString(Send)))
+			if (!Process->WriteLine(CursorJson::ToString(BuildSendMessage(Request))))
 			{
 				Fail(TEXT("Could not write to the Cursor bridge."));
 			}
@@ -783,10 +822,14 @@ void FCursorBridgeBackend::RunEditorTool(const FString& CallId, const FString& N
 			}
 			Self->PendingToolCalls.Remove(CallId);
 
-			FAgentEvent Finished = FAgentEvent::Make(EAgentEventType::ToolCallFinished, Result.Text);
+			FString Text = Result.Text.IsEmpty() ? FString(TEXT("(no output)")) : Result.Text;
+			const TArray<FCursorImage> Sent = CursorAgent::TakeToolImages(Result.Images, Self->ToolImagesThisTurn, Text);
+
+			FAgentEvent Finished = FAgentEvent::Make(EAgentEventType::ToolCallFinished, Text);
 			Finished.ToolCallId = CallId;
 			Finished.ToolName = Name;
 			Finished.bIsError = Result.bIsError;
+			Finished.Images = Sent;
 			Self->Emit(Finished);
 
 			if (Self->Process && Self->Process->IsRunning())
@@ -794,8 +837,12 @@ void FCursorBridgeBackend::RunEditorTool(const FString& CallId, const FString& N
 				TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 				Message->SetStringField(TEXT("type"), TEXT("tool_result"));
 				Message->SetStringField(TEXT("callId"), CallId);
-				Message->SetStringField(TEXT("text"), Result.Text.IsEmpty() ? TEXT("(no output)") : Result.Text);
+				Message->SetStringField(TEXT("text"), Text);
 				Message->SetBoolField(TEXT("isError"), Result.bIsError);
+				if (Sent.Num() > 0)
+				{
+					Message->SetArrayField(TEXT("images"), ImagesToJson(Sent));
+				}
 				Self->Process->WriteLine(CursorJson::ToString(Message));
 			}
 
@@ -837,6 +884,7 @@ void FCursorBridgeBackend::BeginTurn(FAgentEventSink InSink)
 	Sink = MakeShared<FAgentEventSink>(MoveTemp(InSink));
 	bCancelRequested = false;
 	TurnUsage = FAgentUsage();
+	ToolImagesThisTurn = 0;
 	PendingToolCalls.Reset();
 	ActiveTurnId.Reset();
 }

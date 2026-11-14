@@ -184,3 +184,63 @@ test("a run that cannot start reports error without a done", async () => {
   assert.equal(out.some((message) => message.type === "done"), false);
   assert.equal(out.find((message) => message.type === "error").started, false);
 });
+
+test("pictures attached to a message reach the SDK as images beside the text", async () => {
+  const { bridge, out, logs } = makeBridge();
+  await init(bridge, { prewarm: false });
+  out.length = 0;
+  await bridge.handle({
+    type: "send",
+    id: "t7",
+    text: "[[images]] What is in these?",
+    model: { id: "stand-in-large" },
+    images: [
+      { data: "QUJDRA==", mimeType: "image/png", width: 640, height: 360 },
+      { data: "RUZHSA==", mimeType: "image/jpeg" },
+      // Dropped: not a format the editor sends, no data, not an object.
+      { data: "SUpLTA==", mimeType: "image/svg+xml" },
+      { data: "", mimeType: "image/png" },
+      "not an image",
+    ],
+  });
+  const report = JSON.parse(out.find((message) => message.type === "text_delta").text);
+  assert.deepEqual(report, [
+    { mimeType: "image/png", base64Chars: 8, dimension: { width: 640, height: 360 } },
+    { mimeType: "image/jpeg", base64Chars: 8, dimension: null },
+  ]);
+  assert.equal(fakeSdk.state.sends[0].images, 2);
+  // Picture data is never echoed back to the editor or written to a log.
+  const everything = JSON.stringify(out) + JSON.stringify(logs);
+  assert.equal(everything.includes("QUJDRA=="), false);
+});
+
+test("a message without pictures is still sent as plain text", async () => {
+  const { bridge, out } = makeBridge();
+  await init(bridge, { prewarm: false });
+  out.length = 0;
+  await bridge.handle({ type: "send", id: "t8", text: "[[images]]", model: { id: "stand-in-large" }, images: [] });
+  assert.equal(out.find((message) => message.type === "text_delta").text, "[]");
+  assert.equal(fakeSdk.state.sends[0].images, 0);
+});
+
+test("a picture in a tool result is handed to the model as image content", async () => {
+  const { bridge, out } = makeBridge();
+  await init(bridge, { prewarm: false });
+  out.length = 0;
+  const turn = bridge.handle({ type: "send", id: "t9", text: "[[tool:editor_get_context]]", model: { id: "stand-in-large" } });
+  await flush();
+  const call = out.find((message) => message.type === "tool_call");
+  await bridge.handle({
+    type: "tool_result",
+    callId: call.callId,
+    text: '{"width":640}',
+    isError: false,
+    images: [{ data: "QUJDRA==", mimeType: "image/jpeg" }],
+  });
+  await turn;
+  const reply = out
+    .filter((message) => message.type === "text_delta")
+    .map((message) => message.text)
+    .join("");
+  assert.equal(reply, 'Tool said: {"width":640}[image image/jpeg 8 base64 chars]');
+});

@@ -19,7 +19,9 @@ public class CursorUnrealCore : ModuleRules
 		{
 			"UnrealEd",
 			"Projects",
-			"DirectoryWatcher"
+			"DirectoryWatcher",
+			"ImageCore",
+			"ImageWrapper"
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
@@ -28,6 +30,8 @@ public class CursorUnrealCore : ModuleRules
 			PublicSystemLibraries.Add("advapi32.lib");
 			// BCryptGenRandom, for the MCP access token.
 			PublicSystemLibraries.Add("bcrypt.lib");
+			// DragQueryFileW, for image files pasted from the clipboard.
+			PublicSystemLibraries.Add("shell32.lib");
 		}
 	}
 }

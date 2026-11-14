@@ -56,6 +56,8 @@ public:
 
 	/** Number of messages in the conversation as it would be sent. For tests. */
 	int32 NumHistoryMessages() const { return History.Num(); }
+	/** Number of pictures in the conversation as it would be sent. For tests. */
+	int32 NumHistoryImages() const;
 	/** Reads a model list in the shape GET /v1/models returns. */
 	static bool ParseModelList(const FString& Json, TArray<FAgentModelInfo>& OutModels, FString& OutNextCursor);
 
@@ -84,7 +86,9 @@ private:
 
 	void RunTools();
 	void RunNextTool();
-	void HandleToolResult(int32 Index, bool bIsError, const FString& Text);
+	void HandleToolResult(int32 Index, bool bIsError, const FString& Text, const TArray<FCursorImage>& Images = TArray<FCursorImage>());
+	/** Drops the oldest pictures from the conversation once it holds too many. */
+	void PruneImages();
 	void FinishTools();
 
 	void Emit(const FAgentEvent& Event);
@@ -125,6 +129,8 @@ private:
 	int32 Attempt = 0;
 	bool bCancelRequested = false;
 	FAgentUsage TurnUsage;
+	/** Pictures tools have returned to the model this turn. */
+	int32 ToolImagesThisTurn = 0;
 
 	TSharedPtr<IAgentHttpCall> ActiveCall;
 	FAnthropicStreamAssembler Assembler;

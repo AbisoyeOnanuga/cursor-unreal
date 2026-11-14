@@ -33,6 +33,11 @@ const BUILTIN_TOOL_MODES = {
 
 const SETTING_SOURCES = new Set(["project", "user", "team", "mdm", "plugins", "all"]);
 
+/** Picture formats passed on to the SDK. The editor only sends these two. */
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg"]);
+/** Most pictures taken from one message. The editor sends fewer. */
+const MAX_IMAGES = 16;
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -93,6 +98,26 @@ function normalizeModel(model) {
     }
   }
   return selection;
+}
+
+/**
+ * Pictures from the editor, as { data: base64, mimeType, width?, height? }. Anything else is
+ * dropped. The data is passed through untouched and never logged.
+ */
+function normalizeImages(images) {
+  if (!Array.isArray(images)) {
+    return [];
+  }
+  return images
+    .filter((image) => isRecord(image) && typeof image.data === "string" && image.data !== "" && IMAGE_TYPES.has(image.mimeType))
+    .slice(0, MAX_IMAGES)
+    .map((image) => {
+      const out = { data: image.data, mimeType: image.mimeType };
+      if (Number.isInteger(image.width) && Number.isInteger(image.height) && image.width > 0 && image.height > 0) {
+        out.dimension = { width: image.width, height: image.height };
+      }
+      return out;
+    });
 }
 
 function normalizeTools(tools) {
@@ -460,7 +485,9 @@ export function createBridge({ loadSdk, send, log = () => {}, onShutdown = () =>
       }
 
       // Tools are passed on every send as well, so a pack switched on or off in the editor applies to the next message.
-      turn.run = await agent.send(message.text, { model, local: { customTools: buildCustomTools() } });
+      const images = normalizeImages(message.images);
+      const userMessage = images.length > 0 ? { text: message.text, images } : message.text;
+      turn.run = await agent.send(userMessage, { model, local: { customTools: buildCustomTools() } });
       emit({ type: "started", id, agentId: turn.run.agentId ?? agent.agentId, runId: turn.run.id });
       if (turn.cancelRequested) {
         await cancelRun(turn);
@@ -564,10 +591,12 @@ export function createBridge({ loadSdk, send, log = () => {}, onShutdown = () =>
           const pending = pendingCalls.get(message.callId);
           if (pending) {
             pendingCalls.delete(message.callId);
-            pending.resolve({
-              content: [{ type: "text", text: typeof message.text === "string" && message.text !== "" ? message.text : "(no output)" }],
-              isError: message.isError === true,
-            });
+            const content = [{ type: "text", text: typeof message.text === "string" && message.text !== "" ? message.text : "(no output)" }];
+            // A screenshot or other picture the tool returned for the model to look at.
+            for (const image of normalizeImages(message.images)) {
+              content.push({ type: "image", data: image.data, mimeType: image.mimeType });
+            }
+            pending.resolve({ content, isError: message.isError === true });
           }
           break;
         }
