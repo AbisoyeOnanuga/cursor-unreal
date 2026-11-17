@@ -41,5 +41,4 @@ Output lands under `Packaged/<EngineVersion>/CursorUnreal/`.
 
 ## Status
 
-- Plan phases **0–5 complete** on **UE 5.6.1** (build, 42 automation tests, package with Skills + Bridge).
 - Optional later (not blocking): live Anthropic/Cursor API smoke, Cursor IDE `mcp.json` wiring, focused-editor MCP latency.
